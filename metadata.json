@@ -1,0 +1,6 @@
+{
+  "name": "wavework.ai",
+  "description": "wavework.ai is a professional workspace that combines dynamic messaging, live interactive drawing, and private note systems into a single-pane dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

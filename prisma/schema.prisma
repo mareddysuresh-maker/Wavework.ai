@@ -1,0 +1,164 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String   @id
+  name      String
+  email     String   @unique
+  avatarUrl String
+  color     String
+  timezone  String   @default("UTC")
+  role      String   @default("MEMBER")
+  password  String   @default("password123")
+  createdAt DateTime @default(now())
+}
+
+model Space {
+  id          String  @id
+  workspaceId String  @default("w-1")
+  name        String
+  color       String
+  icon        String
+  isPrivate   Boolean @default(false)
+}
+
+model Folder {
+  id      String @id
+  spaceId String
+  name    String
+  color   String @default("#6366f1")
+}
+
+model List {
+  id           String @id
+  spaceId      String
+  folderId     String @default("")
+  name         String
+  createdAt    String
+  customFields String @default("[]")
+}
+
+model Task {
+  id           String   @id
+  listId       String
+  parentTaskId String   @default("")
+  name         String
+  description  String   @default("")
+  status       String   @default("TODO")
+  priority     String   @default("NORMAL")
+  assigneeId   String   @default("")
+  startDate    String   @default("")
+  dueDate      String   @default("")
+  order        Int      @default(0)
+  tags         String   @default("[]")
+  timeEstimate Int      @default(0)
+  timeTracked  Int      @default(0)
+  customFields String   @default("{}")
+  checklist    String   @default("[]")
+  createdById  String   @default("")
+  createdAt    String
+  updatedAt    String
+}
+
+model Channel {
+  id          String   @id
+  workspaceId String   @default("w-1")
+  name        String
+  description String   @default("")
+  isPrivate   Boolean  @default(false)
+  isDM        Boolean  @default(false)
+  isGroup     Boolean  @default(false)
+  memberIds   String   @default("[]")
+  logoUrl     String   @default("")
+  adminIds    String   @default("[]")
+  createdAt   String
+}
+
+model Message {
+  id           String @id
+  channelId    String
+  authorId     String
+  content      String
+  parentId     String @default("")
+  taskId       String @default("")
+  savedByIds   String @default("[]")
+  reactions    String @default("[]")
+  attachments  String @default("[]")
+  createdAt    String
+}
+
+model Notification {
+  id         String   @id
+  userId     String
+  type       String
+  title      String
+  body       String
+  entityId   String   @default("")
+  entityType String   @default("")
+  isRead     Boolean  @default(false)
+  isSaved    Boolean  @default(false)
+  createdAt  String
+}
+
+model ChatRequest {
+  id            String @id
+  senderId      String
+  receiverEmail String
+  receiverName  String
+  status        String @default("PENDING")
+  previewUrl    String @default("")
+  createdAt     String
+}
+
+model Form {
+  id          String  @id
+  listId      String
+  name        String
+  description String  @default("")
+  slug        String  @unique
+  fields      String  @default("[]")
+  isPublic    Boolean @default(true)
+  createdAt   String
+}
+
+model Note {
+  id        String @id
+  userId    String
+  title     String @default("")
+  content   String @default("")
+  createdAt String
+  updatedAt String
+}
+
+model Sketch {
+  id        String @id
+  userId    String
+  title     String @default("")
+  bg        String @default("#ffffff")
+  strokes   String @default("[]")
+  createdAt String
+}
+
+model PomodoroSettings {
+  id            String  @id
+  userId        String  @unique
+  workDuration  Int     @default(25)
+  shortBreak    Int     @default(5)
+  longBreak     Int     @default(15)
+  autoStartTime Boolean @default(false)
+}
+
+model PomodoroSession {
+  id              String @id
+  userId          String
+  taskId          String @default("")
+  durationMinutes Int
+  type            String
+  completedAt     String
+}
