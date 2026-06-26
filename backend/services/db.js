@@ -334,181 +334,202 @@ async function hashExistingPlaintextPasswords() {
 
 async function seedDatabaseIfEmpty() {
   try {
-    const userCount = await prisma.user.count();
-    if (userCount === 0) {
+    const spaceCount = await prisma.space.count();
+    if (spaceCount === 0) {
       console.log("🌱 Database is empty! Auto-seeding initial beautiful ClickUp clone dataset...");
       
       // Seed users
       const defaultPasswordHash = bcrypt.hashSync("password123", 10);
       for (const u of DEFAULT_STATE.users) {
-        await prisma.user.create({
-          data: {
-            ...u,
-            password: defaultPasswordHash
-          }
-        });
+        try {
+          await prisma.user.create({
+            data: {
+              ...u,
+              password: defaultPasswordHash
+            }
+          });
+        } catch (e) {
+          console.warn(`User ${u.id} might already exist, skipping...`);
+        }
       }
       
       // Seed spaces
       for (const s of DEFAULT_STATE.spaces) {
-        await prisma.space.create({ data: s });
+        try { await prisma.space.create({ data: s }); } catch (e) { console.warn(`Space ${s.id} might already exist.`); }
       }
       
       // Seed folders
       for (const f of DEFAULT_STATE.folders) {
-        await prisma.folder.create({ data: f });
+        try { await prisma.folder.create({ data: f }); } catch (e) { console.warn(`Folder ${f.id} might already exist.`); }
       }
       
       // Seed lists
       for (const l of DEFAULT_STATE.lists) {
-        await prisma.list.create({
-          data: {
-            id: l.id,
-            spaceId: l.spaceId,
-            folderId: l.folderId || "",
-            name: l.name,
-            createdAt: l.createdAt,
-            customFields: JSON.stringify(l.customFields || [])
-          }
-        });
+        try {
+          await prisma.list.create({
+            data: {
+              id: l.id,
+              spaceId: l.spaceId,
+              folderId: l.folderId || "",
+              name: l.name,
+              createdAt: l.createdAt,
+              customFields: JSON.stringify(l.customFields || [])
+            }
+          });
+        } catch (e) { console.warn(`List ${l.id} might already exist.`); }
       }
       
       // Seed tasks
       for (const t of DEFAULT_STATE.tasks) {
-        await prisma.task.create({
-          data: {
-            id: t.id,
-            listId: t.listId,
-            name: t.name,
-            description: t.description || "",
-            status: t.status || "TODO",
-            priority: t.priority || "NORMAL",
-            assigneeId: t.assigneeId || "",
-            startDate: t.startDate || "",
-            dueDate: t.dueDate || "",
-            order: t.order || 0,
-            tags: JSON.stringify(t.tags || []),
-            timeEstimate: t.timeEstimate || 0,
-            timeTracked: t.timeTracked || 0,
-            customFields: JSON.stringify(t.customFields || {}),
-            checklist: JSON.stringify(t.checklist || []),
-            createdById: t.createdById || "u-1",
-            createdAt: t.createdAt,
-            updatedAt: t.updatedAt
-          }
-        });
+        try {
+          await prisma.task.create({
+            data: {
+              id: t.id,
+              listId: t.listId,
+              name: t.name,
+              description: t.description || "",
+              status: t.status || "TODO",
+              priority: t.priority || "NORMAL",
+              assigneeId: t.assigneeId || "",
+              startDate: t.startDate || "",
+              dueDate: t.dueDate || "",
+              order: t.order || 0,
+              tags: JSON.stringify(t.tags || []),
+              timeEstimate: t.timeEstimate || 0,
+              timeTracked: t.timeTracked || 0,
+              customFields: JSON.stringify(t.customFields || {}),
+              checklist: JSON.stringify(t.checklist || []),
+              createdById: t.createdById || "u-1",
+              createdAt: t.createdAt,
+              updatedAt: t.updatedAt
+            }
+          });
+        } catch (e) { console.warn(`Task ${t.id} might already exist.`); }
       }
       
       // Seed channels
       for (const ch of DEFAULT_STATE.channels) {
-        await prisma.channel.create({
-          data: {
-            id: ch.id,
-            workspaceId: ch.workspaceId || "w-1",
-            name: ch.name,
-            description: ch.description || "",
-            isPrivate: !!ch.isPrivate,
-            isDM: !!ch.isDM,
-            isGroup: false,
-            memberIds: JSON.stringify(ch.memberIds || []),
-            logoUrl: "",
-            adminIds: JSON.stringify([]),
-            createdAt: ch.createdAt
-          }
-        });
+        try {
+          await prisma.channel.create({
+            data: {
+              id: ch.id,
+              workspaceId: ch.workspaceId || "w-1",
+              name: ch.name,
+              description: ch.description || "",
+              isPrivate: !!ch.isPrivate,
+              isDM: !!ch.isDM,
+              isGroup: false,
+              memberIds: JSON.stringify(ch.memberIds || []),
+              logoUrl: "",
+              adminIds: JSON.stringify([]),
+              createdAt: ch.createdAt
+            }
+          });
+        } catch (e) { console.warn(`Channel ${ch.id} might already exist.`); }
       }
       
       // Seed messages
       for (const m of DEFAULT_STATE.messages) {
-        await prisma.message.create({
-          data: {
-            id: m.id,
-            channelId: m.channelId,
-            authorId: m.authorId,
-            content: m.content,
-            parentId: m.parentId || "",
-            taskId: m.taskId || "",
-            savedByIds: JSON.stringify(m.savedByIds || []),
-            reactions: JSON.stringify(m.reactions || []),
-            attachments: JSON.stringify([]),
-            createdAt: m.createdAt
-          }
-        });
+        try {
+          await prisma.message.create({
+            data: {
+              id: m.id,
+              channelId: m.channelId,
+              authorId: m.authorId,
+              content: m.content,
+              parentId: m.parentId || "",
+              taskId: m.taskId || "",
+              savedByIds: JSON.stringify(m.savedByIds || []),
+              reactions: JSON.stringify(m.reactions || []),
+              attachments: JSON.stringify([]),
+              createdAt: m.createdAt
+            }
+          });
+        } catch (e) { console.warn(`Message ${m.id} might already exist.`); }
       }
       
       // Seed notifications
       for (const n of DEFAULT_STATE.notifications) {
-        await prisma.notification.create({
-          data: {
-            id: n.id,
-            userId: n.userId,
-            type: n.type,
-            title: n.title,
-            body: n.body,
-            entityId: n.entityId || "",
-            entityType: n.entityType || "",
-            isRead: !!n.isRead,
-            isSaved: !!n.isSaved,
-            createdAt: n.createdAt
-          }
-        });
+        try {
+          await prisma.notification.create({
+            data: {
+              id: n.id,
+              userId: n.userId,
+              type: n.type,
+              title: n.title,
+              body: n.body,
+              entityId: n.entityId || "",
+              entityType: n.entityType || "",
+              isRead: !!n.isRead,
+              isSaved: !!n.isSaved,
+              createdAt: n.createdAt
+            }
+          });
+        } catch (e) { console.warn(`Notification ${n.id} might already exist.`); }
       }
       
       // Seed forms
       for (const fo of DEFAULT_STATE.forms) {
-        await prisma.form.create({
-          data: {
-            id: fo.id,
-            listId: fo.listId,
-            name: fo.name,
-            description: fo.description || "",
-            slug: fo.slug,
-            fields: JSON.stringify(fo.fields || []),
-            isPublic: !!fo.isPublic,
-            createdAt: fo.createdAt
-          }
-        });
+        try {
+          await prisma.form.create({
+            data: {
+              id: fo.id,
+              listId: fo.listId,
+              name: fo.name,
+              description: fo.description || "",
+              slug: fo.slug,
+              fields: JSON.stringify(fo.fields || []),
+              isPublic: !!fo.isPublic,
+              createdAt: fo.createdAt
+            }
+          });
+        } catch (e) { console.warn(`Form ${fo.id} might already exist.`); }
       }
       
       // Seed notes
       for (const n of DEFAULT_STATE.notes) {
-        await prisma.note.create({
-          data: {
-            id: n.id,
-            userId: n.userId,
-            title: n.title || "",
-            content: n.content || "",
-            createdAt: n.createdAt,
-            updatedAt: n.updatedAt
-          }
-        });
+        try {
+          await prisma.note.create({
+            data: {
+              id: n.id,
+              userId: n.userId,
+              title: n.title || "",
+              content: n.content || "",
+              createdAt: n.createdAt,
+              updatedAt: n.updatedAt
+            }
+          });
+        } catch (e) { console.warn(`Note ${n.id} might already exist.`); }
       }
       
       // Seed sketches
       for (const sk of DEFAULT_STATE.sketches) {
-        await prisma.sketch.create({
-          data: {
-            id: sk.id,
-            userId: sk.userId,
-            title: sk.title || "",
-            bg: sk.bg || "#ffffff",
-            strokes: JSON.stringify(sk.strokes || []),
-            createdAt: sk.createdAt
-          }
-        });
+        try {
+          await prisma.sketch.create({
+            data: {
+              id: sk.id,
+              userId: sk.userId,
+              title: sk.title || "",
+              bg: sk.bg || "#ffffff",
+              strokes: JSON.stringify(sk.strokes || []),
+              createdAt: sk.createdAt
+            }
+          });
+        } catch (e) { console.warn(`Sketch ${sk.id} might already exist.`); }
       }
 
-      // Seed default Pomodoro settings
-      await prisma.pomodoroSettings.create({
-        data: {
-          id: "ps-1",
-          userId: "u-1",
-          workDuration: 25,
-          shortBreak: 5,
-          longBreak: 15,
-          autoStartTime: false
-        }
-      });
+      try {
+        await prisma.pomodoroSettings.create({
+          data: {
+            id: "ps-1",
+            userId: "u-1",
+            workDuration: 25,
+            shortBreak: 5,
+            longBreak: 15,
+            autoStartTime: false
+          }
+        });
+      } catch (e) { console.warn(`PomodoroSettings ps-1 might already exist.`); }
       
       console.log("🌻 Database preloaded and online!");
       await migrateRolesAndWorkspaces();
