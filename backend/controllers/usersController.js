@@ -159,7 +159,7 @@ export const usersController = {
 
       const token = jwt.sign(
         { id: user.id, email: user.email, role: 'SUPER_ADMIN', workspaceId: workspaceId },
-        process.env.JWT_SECRET,
+        (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
         { expiresIn: '24h' }
       );
       const { password: _, ...safeUser } = user;
@@ -262,7 +262,7 @@ export const usersController = {
       // Generate a new token with the updated workspace context
       const token = jwt.sign(
         { id: req.user.id, email: req.user.email, role: 'SUPER_ADMIN', workspaceId: workspaceId },
-        process.env.JWT_SECRET,
+        (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
         { expiresIn: '24h' }
       );
 
@@ -319,7 +319,7 @@ export const usersController = {
       // Generate new token with correct role/workspace context
       const token = jwt.sign(
         { id: userId, email: req.user.email, role: targetMembership.role, workspaceId: workspaceId },
-        process.env.JWT_SECRET,
+        (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
         { expiresIn: '24h' }
       );
 
@@ -393,7 +393,7 @@ export const usersController = {
 
         const token = jwt.sign(
           { id: activeUser.id, email: activeUser.email, role: resolvedRole, workspaceId: resolvedWorkspaceId },
-          process.env.JWT_SECRET,
+          (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
           { expiresIn: '24h' }
         );
         return res.json({
@@ -428,7 +428,7 @@ export const usersController = {
       const activeUser = users.find(u => u.id === userId);
       const token = jwt.sign(
         { id: activeUser.id, email: activeUser.email, role: activeUser.role },
-        process.env.JWT_SECRET,
+        (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
         { expiresIn: '24h' }
       );
       const { password, ...safeUser } = activeUser;
@@ -611,7 +611,7 @@ export const usersController = {
 
       const token = jwt.sign(
         { id: user.id, email: user.email, role: resolvedRole, workspaceId: resolvedWorkspaceId },
-        process.env.JWT_SECRET,
+        (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
         { expiresIn: '24h' }
       );
       const { password: _, ...safeUser } = user;
@@ -1149,7 +1149,7 @@ export const usersController = {
       await dbService.setActiveUserId(userId);
       const token = jwt.sign(
         { id: user.id, email: user.email, role: user.role, workspaceId: user.workspaceId },
-        process.env.JWT_SECRET,
+        (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'),
         { expiresIn: '24h' }
       );
       const { password: _, ...safeUser } = user;
