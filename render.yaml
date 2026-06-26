@@ -25,6 +25,7 @@ services:
   - type: redis
     name: flowup-redis
     plan: free
+    ipAllowList: []
 
 databases:
   - name: flowup-db
