@@ -3,12 +3,15 @@ import { User, Space, Folder, List, Task, Comment, Channel, Message, Notificatio
 const API_BASE = '/api';
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  // Read active user ID from session state (per-tab) first, then local state if switching
   const storedUserId = sessionStorage.getItem('activeUserId') || localStorage.getItem('activeUserId') || 'u-1';
+  const token = sessionStorage.getItem('socketToken') || localStorage.getItem('socketToken');
 
   const headers = new Headers(options.headers);
   headers.append('Content-Type', 'application/json');
   headers.append('X-Active-User-Id', storedUserId);
+  if (token) {
+    headers.append('Authorization', `Bearer ${token}`);
+  }
 
   const config: RequestInit = {
     ...options,
