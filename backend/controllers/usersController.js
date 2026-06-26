@@ -70,7 +70,8 @@ export const usersController = {
       // Enforce user password rules
       const parseResult = signupSchema.safeParse({ name, email, password });
       if (!parseResult.success) {
-        const errorMsg = parseResult.error.errors.map(e => e.message).join(' | ');
+        const issues = parseResult.error.issues || parseResult.error.errors || [];
+        const errorMsg = issues.map(e => e.message).join(' | ');
         return res.status(400).json({ error: errorMsg });
       }
 
