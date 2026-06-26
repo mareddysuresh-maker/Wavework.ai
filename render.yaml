@@ -22,12 +22,12 @@ services:
       - key: ALLOW_DEV_BYPASS
         value: "false"
 
+  - type: redis
+    name: flowup-redis
+    plan: free
+
 databases:
   - name: flowup-db
     databaseName: flowup_prod
     user: flowup_admin
     plan: starter
-
-  - type: redis
-    name: flowup-redis
-    plan: free
