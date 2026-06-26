@@ -3,7 +3,7 @@ services:
     name: flowup-app
     env: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
     healthCheckPath: /
     envVars:
       - key: DATABASE_URL
@@ -31,4 +31,4 @@ databases:
   - name: flowup-db
     databaseName: flowup_prod
     user: flowup_admin
-    plan: starter
+    plan: free
