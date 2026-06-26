@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { FlowProvider, useFlow } from './lib/FlowContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { DashboardView } from './components/DashboardView';
 import { TaskBoardView } from './components/TaskBoardView';
@@ -10,8 +11,12 @@ import { FormsBuilderHub } from './components/FormsBuilderHub';
 import { PublicFormPage } from './components/PublicFormPage';
 import { NotesView } from './components/NotesView';
 import { WhiteboardView } from './components/WhiteboardView';
+import { PersonalSpaceView } from './components/PersonalSpaceView';
+import { FileHubView } from './components/FileHubView';
 import { PomodoroTimerWidget } from './components/PomodoroTimerWidget';
 import { SplashAuth } from './components/SplashAuth';
+import { MemberDirectoryView } from './components/MemberDirectoryView';
+import { WorkspaceSettingsView } from './components/WorkspaceSettingsView';
 import { Sparkles, MessageSquare, AlertCircle } from 'lucide-react';
 
 const PrimaryWorkspaceRouter: React.FC = () => {
@@ -23,7 +28,7 @@ const PrimaryWorkspaceRouter: React.FC = () => {
   useEffect(() => {
     // Check URL parameters for simulation identity hook or public portals routing
     const params = new URLSearchParams(window.location.search);
-    
+
     // 1. Check if public guest portal matching form slugs
     const slug = params.get('publicFormSlug');
     if (slug) {
@@ -47,15 +52,15 @@ const PrimaryWorkspaceRouter: React.FC = () => {
   if (publicFormSlug) {
     return (
       <div className="w-screen h-screen bg-slate-950">
-        <PublicFormPage 
-          slug={publicFormSlug} 
+        <PublicFormPage
+          slug={publicFormSlug}
           onClose={() => {
             // Remove parameter from address bar and load main application
             const url = new URL(window.location.href);
             url.searchParams.delete('publicFormSlug');
             window.history.pushState({}, '', url.toString());
             setPublicFormSlug(null);
-          }} 
+          }}
         />
       </div>
     );
@@ -79,24 +84,48 @@ const PrimaryWorkspaceRouter: React.FC = () => {
   // Renders primary workspace screen
   const renderMainWorkspaceContent = () => {
     switch (currentView) {
-      case 'DASHBOARD':
+      case 'UNIFIED_ALERTS':
+        return <UnifiedInboxView />;
+      case 'TRACK_PROGRESS_METRICS':
         return <DashboardView />;
-      case 'BOARD':
-        return <TaskBoardView />;
-      case 'PLANNER':
+      case 'TRACK_PROGRESS_BOARD':
+        return <TaskBoardView defaultSubTab="BOARD" />;
+      case 'TRACK_PROGRESS_PLANNER':
         return <PlannerView />;
+      case 'MY_TASKS_DASHBOARD':
+        return <TaskBoardView forceAssigneeFilter={true} defaultSubTab="DASHBOARD" />;
+      case 'MY_TASKS_LIST':
+        return <TaskBoardView forceAssigneeFilter={true} defaultSubTab="LIST" />;
+      case 'MY_TASKS_CALENDAR':
+        return <TaskBoardView forceAssigneeFilter={true} defaultSubTab="CALENDAR" />;
+      case 'PERSONAL_SPACE_DASHBOARD':
+        return <PersonalSpaceView defaultTab="REMINDERS" />;
+      case 'PERSONAL_SPACE_LIST':
+        return <PersonalSpaceView defaultTab="TASKS" />;
+      case 'PERSONAL_SPACE_SCRATCHPAD':
+        return <PersonalSpaceView defaultTab="NOTES" />;
+      case 'PERSONAL_SPACE_WHITEBOARD':
+        return <PersonalSpaceView defaultTab="PAINT" />;
+      case 'FILE_HUB':
+        return <FileHubView />;
+      case 'DIRECTORY_TEAMMATES':
+        return <MemberDirectoryView />;
+      case 'DIRECTORY_PORTALS':
+        return <FormsBuilderHub />;
+      case 'SPACE_BOARD':
+        return <TaskBoardView defaultSubTab="BOARD" />;
       case 'CHAT':
         return <ChatEngineView />;
-      case 'INBOX':
-        return <UnifiedInboxView />;
-      case 'FORMS':
-        return <FormsBuilderHub />;
-      case 'NOTES':
-        return <NotesView />;
-      case 'WHITEBOARD':
-        return <WhiteboardView />;
+      case 'WORKSPACE_SETTINGS_INFO':
+        return <WorkspaceSettingsView defaultTab="info" />;
+      case 'WORKSPACE_SETTINGS_INVITES':
+        return <WorkspaceSettingsView defaultTab="invitations" />;
+      case 'WORKSPACE_SETTINGS_LOGS':
+        return <WorkspaceSettingsView defaultTab="logs" />;
+      case 'WORKSPACE_SETTINGS_ROLES':
+        return <MemberDirectoryView />;
       default:
-        return <DashboardView />;
+        return <TaskBoardView forceAssigneeFilter={true} defaultSubTab="DASHBOARD" />;
     }
   };
 
@@ -126,7 +155,7 @@ const PrimaryWorkspaceRouter: React.FC = () => {
 
       {/* Mobile Sidebar Backdrop Overlay */}
       {isMobileSidebarOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/50 z-30 md:hidden"
           onClick={() => setIsMobileSidebarOpen(false)}
         />
@@ -148,8 +177,10 @@ const PrimaryWorkspaceRouter: React.FC = () => {
 
 export default function App() {
   return (
-    <FlowProvider>
-      <PrimaryWorkspaceRouter />
-    </FlowProvider>
+    <ErrorBoundary>
+      <FlowProvider>
+        <PrimaryWorkspaceRouter />
+      </FlowProvider>
+    </ErrorBoundary>
   );
 }

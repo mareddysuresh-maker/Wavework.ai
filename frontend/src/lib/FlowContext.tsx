@@ -3,24 +3,32 @@ import { User, Space, Folder, List, Task, Comment, Channel, Message, Notificatio
 import { api } from './api';
 import { io } from 'socket.io-client';
 
-export type ViewType = 'DASHBOARD' | 'BOARD' | 'PLANNER' | 'CHAT' | 'INBOX' | 'FORMS' | 'NOTES' | 'WHITEBOARD';
+export type ViewType = 
+  | 'UNIFIED_ALERTS'
+  | 'TRACK_PROGRESS_METRICS' | 'TRACK_PROGRESS_BOARD' | 'TRACK_PROGRESS_PLANNER'
+  | 'MY_TASKS_DASHBOARD' | 'MY_TASKS_LIST' | 'MY_TASKS_CALENDAR'
+  | 'PERSONAL_SPACE_DASHBOARD' | 'PERSONAL_SPACE_LIST' | 'PERSONAL_SPACE_SCRATCHPAD' | 'PERSONAL_SPACE_WHITEBOARD'
+  | 'FILE_HUB'
+  | 'DIRECTORY_TEAMMATES' | 'DIRECTORY_PORTALS' | 'SPACE_BOARD'
+  | 'CHAT'
+  | 'WORKSPACE_SETTINGS_INFO' | 'WORKSPACE_SETTINGS_INVITES' | 'WORKSPACE_SETTINGS_LOGS' | 'WORKSPACE_SETTINGS_ROLES';
 
 export const playNotificationSound = () => {
   try {
     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
     const oscillator = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
-    
+
     oscillator.type = 'sine';
     oscillator.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
     oscillator.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1); // E5
-    
+
     gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime);
     gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
-    
+
     oscillator.connect(gainNode);
     gainNode.connect(audioCtx.destination);
-    
+
     oscillator.start();
     oscillator.stop(audioCtx.currentTime + 0.4);
   } catch (e) {
@@ -63,9 +71,9 @@ interface FlowContextType {
   // Actions Mutators
   switchUser: (userId: string) => Promise<void>;
   triggerSync: () => Promise<void>;
-  
+
   // Spaces & Hierarchy
-  createSpace: (name: string, color: string, icon: string, isPrivate: boolean) => Promise<void>;
+  createSpace: (name: string, color: string, icon: string, isPrivate: boolean, memberIds?: string[]) => Promise<void>;
   deleteSpace: (id: string) => Promise<void>;
   createFolder: (spaceId: string, name: string, color?: string) => Promise<void>;
   createList: (spaceId: string, folderId: string | undefined, name: string) => Promise<void>;
@@ -127,14 +135,19 @@ const FlowContext = createContext<FlowContextType | undefined>(undefined);
 let globalSocket: any = null;
 
 function getClientSocket() {
+  const token = sessionStorage.getItem('socketToken');
   if (!globalSocket) {
     console.log("[Socket.io-Client] Initiating singleton socket client...");
     globalSocket = io({
       transports: ['websocket', 'polling'],
       autoConnect: false,
       reconnectionAttempts: 10,
-      reconnectionDelay: 2000
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      auth: { token }
     });
+  } else {
+    globalSocket.auth = { token };
   }
   return globalSocket;
 }
@@ -172,7 +185,7 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [sketches, setSketches] = useState<Sketch[]>([]);
   const [selectedSketch, setSelectedSketchState] = useState<Sketch | null>(null);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
-  const [currentView, setCurrentView] = useState<ViewType>('DASHBOARD');
+  const [currentView, setCurrentView] = useState<ViewType>('MY_TASKS_DASHBOARD');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -186,12 +199,20 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [typingUsers, setTypingUsers] = useState<{ userId: string; userName: string }[]>([]);
 
   // Sync core lists data from API
+  const syncInProgressRef = React.useRef(false);
+  const syncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
   const triggerSync = useCallback(async () => {
+    if (syncInProgressRef.current) return;
+    syncInProgressRef.current = true;
     try {
       const updatedUsers = await api.getUsers();
       setUsers(updatedUsers);
 
       const active = await api.getActiveUser();
+      if ((active as any).token) {
+        sessionStorage.setItem('socketToken', (active as any).token);
+      }
       setActiveUser(active);
 
       const updatedSpaces = await api.getSpaces();
@@ -244,14 +265,24 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setError(err?.message || 'Sync failed');
       }
     } finally {
+      syncInProgressRef.current = false;
       setIsLoading(false);
     }
   }, []);
 
+  const triggerSyncDebounced = useCallback(() => {
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+    }
+    syncTimeoutRef.current = setTimeout(() => {
+      triggerSync();
+    }, 300);
+  }, [triggerSync]);
+
   // Fetch full lists initially and set up live syncing
   useEffect(() => {
     triggerSync();
-    
+
     // Periodical polling loop to keep dashboard synced as a fallback
     const interval = setInterval(() => {
       triggerSync();
@@ -260,42 +291,84 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return () => clearInterval(interval);
   }, [triggerSync]);
 
-  // Establish SSE real-time listener for instant task changes and assignments
+  // Establish SSE real-time listener with exponential backoff reconnects
   useEffect(() => {
     const hasUserId = sessionStorage.getItem('activeUserId') || localStorage.getItem('activeUserId') || (activeUser && activeUser.id);
     if (!hasUserId) return;
 
-    console.log("[SSE] Connecting to live event stream...");
-    const sseUrl = api.getLiveSSEUrl();
-    const eventSource = new EventSource(sseUrl);
+    let eventSource: EventSource | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let reconnectDelay = 1000; // start with 1 second
 
-    eventSource.onmessage = (event) => {
-      console.log("[SSE] Real-time event detected. Triggering dynamic sync...");
-      triggerSync();
+    const connectSSE = () => {
+      console.log("[SSE] Connecting to live event stream...");
+      const sseUrl = api.getLiveSSEUrl();
+      eventSource = new EventSource(sseUrl);
+
+      eventSource.onopen = () => {
+        console.log("[SSE] Connection established.");
+        reconnectDelay = 1000; // Reset delay on success
+      };
+
+      eventSource.onmessage = (event) => {
+        console.log("[SSE] Real-time event detected. Triggering dynamic sync...");
+        triggerSyncDebounced();
+      };
+
+      eventSource.onerror = (err) => {
+        console.warn(`[SSE] EventSource failed. Reconnecting in ${reconnectDelay}ms...`, err);
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        reconnectTimeout = setTimeout(() => {
+          reconnectDelay = Math.min(reconnectDelay * 2, 30000); // Exponential backoff max 30s
+          connectSSE();
+        }, reconnectDelay);
+      };
     };
 
-    eventSource.onerror = (err) => {
-      console.warn("[SSE] EventSource failed. Fallback polling maintains connection.", err);
-    };
+    connectSSE();
 
     return () => {
-      eventSource.close();
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+      }
       console.log("[SSE] Closed live event stream connection.");
     };
-  }, [triggerSync, activeUser?.id]);
+  }, [triggerSyncDebounced, activeUser?.id]);
+
+  const selectedChannelRef = React.useRef<Channel | null>(null);
+  useEffect(() => {
+    selectedChannelRef.current = selectedChannel;
+  }, [selectedChannel]);
 
   // Establish stable singleton socket connection for real-time sync with heartbeats
   useEffect(() => {
     const activeUserId = activeUser?.id || sessionStorage.getItem('activeUserId') || localStorage.getItem('activeUserId');
-    if (!activeUserId) return;
+    const token = sessionStorage.getItem('socketToken');
+    if (!activeUserId || !token) return;
 
     const s = getClientSocket();
+
+    // Disconnect if already connected to force new handshake with new token
+    if (s.connected) {
+      s.disconnect();
+    }
+
+    s.auth = { token };
     s.connect();
 
     console.log("[Socket.io-Client] Authenticating initial heartbeat...");
     s.emit('user:heartbeat', { userId: activeUserId, workspaceId: 'w-1' });
 
-    // 3. Heartbeat refreshed every 20 seconds
+    // Heartbeat refreshed every 20 seconds
     const interval = setInterval(() => {
       s.emit('user:heartbeat', { userId: activeUserId, workspaceId: 'w-1' });
     }, 20000);
@@ -303,8 +376,8 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const handleConnect = () => {
       console.log("[Socket.io-Client] Connected successfully!");
       s.emit('user:heartbeat', { userId: activeUserId, workspaceId: 'w-1' });
-      if (selectedChannel) {
-        s.emit('room:join', getSocketRoomName(selectedChannel));
+      if (selectedChannelRef.current) {
+        s.emit('room:join', getSocketRoomName(selectedChannelRef.current));
       }
     };
 
@@ -314,11 +387,23 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const handleMessageReceived = (msg: Message) => {
       console.log("[Socket.io-Client] Real-time message received:", msg);
-      // Ensure idempotent check to guard against duplicates from multi-instances or re-connections
-      setMessages(prev => {
-        if (prev.some(m => m.id === msg.id)) return prev;
-        return [...prev, msg];
-      });
+      if (selectedChannelRef.current && msg.channelId === selectedChannelRef.current.id) {
+        setMessages(prev => {
+          if (prev.some(m => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+        api.markChannelAsRead(msg.channelId).catch(console.error);
+        if (activeUserId) {
+          setChannels(prev => prev.map(ch => {
+            if (ch.id === msg.channelId) {
+              const updatedUnread = { ...(ch.unreadCount || {}) };
+              updatedUnread[activeUserId] = 0;
+              return { ...ch, unreadCount: updatedUnread };
+            }
+            return ch;
+          }));
+        }
+      }
     };
 
     const handleMessageUpdated = (msg: Message) => {
@@ -326,21 +411,65 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     const handleTypingUpdate = (payload: { roomId: string; typingUsers: { userId: string; userName: string }[] }) => {
-      if (selectedChannel && payload.roomId === getSocketRoomName(selectedChannel)) {
+      if (selectedChannelRef.current && payload.roomId === getSocketRoomName(selectedChannelRef.current)) {
         setTypingUsers((payload.typingUsers || []).filter(u => u.userId !== activeUserId));
       }
     };
 
     const handleInviteReceived = (invite: any) => {
       console.log("[Socket.io-Client] Real-time invite received:", invite);
-      triggerSync();
+      triggerSyncDebounced();
     };
 
     const handleInviteAccepted = (channel: Channel) => {
       console.log("[Socket.io-Client] Real-time invite accepted:", channel);
-      triggerSync();
+      triggerSyncDebounced();
       setSelectedChannelState(channel);
       api.getMessages(channel.id).then(setMessages).catch(console.error);
+    };
+
+    const handleTaskCreated = (task: Task) => {
+      console.log("[Socket.io-Client] Real-time task created:", task);
+      setTasks(prev => {
+        if (prev.some(t => t.id === task.id)) return prev;
+        return [...prev, task].sort((a, b) => (a.order || 0) - (b.order || 0));
+      });
+    };
+
+    const handleTaskUpdated = (task: Task) => {
+      console.log("[Socket.io-Client] Real-time task updated:", task);
+      setTasks(prev => prev.map(t => t.id === task.id ? task : t));
+    };
+
+    const handleTaskDeleted = (taskId: string) => {
+      console.log("[Socket.io-Client] Real-time task deleted:", taskId);
+      setTasks(prev => prev.filter(t => t.id !== taskId));
+    };
+
+    const handleNotificationReceived = (noti: Notification) => {
+      console.log("[Socket.io-Client] Real-time notification received:", noti);
+      setInbox(prev => {
+        if (prev.some(n => n.id === noti.id)) return prev;
+        if (!noti.isRead) {
+          playNotificationSound();
+        }
+        return [noti, ...prev];
+      });
+    };
+
+    const handleChannelUpdated = (channel: Channel) => {
+      console.log("[Socket.io-Client] Real-time channel updated:", channel);
+      if (!channel) return;
+      setChannels(prev => {
+        const exists = prev.some(ch => ch && ch.id === channel.id);
+        if (exists) {
+          return prev.map(ch => ch && ch.id === channel.id ? channel : ch);
+        }
+        return [...prev, channel];
+      });
+      if (selectedChannelRef.current?.id === channel.id) {
+        setSelectedChannelState(channel);
+      }
     };
 
     s.on('connect', handleConnect);
@@ -350,6 +479,11 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     s.on('typing:update', handleTypingUpdate);
     s.on('invite:received', handleInviteReceived);
     s.on('invite:accepted', handleInviteAccepted);
+    s.on('task:created', handleTaskCreated);
+    s.on('task:updated', handleTaskUpdated);
+    s.on('task:deleted', handleTaskDeleted);
+    s.on('notification:received', handleNotificationReceived);
+    s.on('channel:updated', handleChannelUpdated);
 
     return () => {
       clearInterval(interval);
@@ -360,9 +494,14 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       s.off('typing:update', handleTypingUpdate);
       s.off('invite:received', handleInviteReceived);
       s.off('invite:accepted', handleInviteAccepted);
+      s.off('task:created', handleTaskCreated);
+      s.off('task:updated', handleTaskUpdated);
+      s.off('task:deleted', handleTaskDeleted);
+      s.off('notification:received', handleNotificationReceived);
+      s.off('channel:updated', handleChannelUpdated);
       s.emit('user:offline', { userId: activeUserId, workspaceId: 'w-1' });
     };
-  }, [activeUser?.id, selectedChannel?.id, triggerSync]);
+  }, [activeUser?.id, triggerSyncDebounced]);
 
   // Handle joining and leaving rooms cleanly
   useEffect(() => {
@@ -399,10 +538,10 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } else {
         setSelectedListState(null);
       }
-      
+
       // Auto transition to board view for task inspection
-      if (currentView === 'CHAT' || currentView === 'INBOX' || currentView === 'FORMS') {
-        setCurrentView('BOARD');
+      if (currentView === 'CHAT' || currentView === 'UNIFIED_ALERTS' || currentView === 'DIRECTORY_PORTALS') {
+        setCurrentView('SPACE_BOARD');
       }
     }
   };
@@ -416,6 +555,22 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (channel) {
       // Sync messages immediately
       api.getMessages(channel.id).then(setMessages).catch(console.error);
+
+      // Mark as read on backend
+      api.markChannelAsRead(channel.id).catch(console.error);
+
+      // Update channels list locally to reset unreadCount for current user
+      const currentUserId = activeUser?.id || sessionStorage.getItem('activeUserId') || localStorage.getItem('activeUserId');
+      if (currentUserId) {
+        setChannels(prev => prev.map(ch => {
+          if (ch.id === channel.id) {
+            const updatedUnread = { ...(ch.unreadCount || {}) };
+            updatedUnread[currentUserId] = 0;
+            return { ...ch, unreadCount: updatedUnread };
+          }
+          return ch;
+        }));
+      }
     }
   };
 
@@ -437,11 +592,29 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [selectedChannel]);
 
-  // Actions Mutators implementation
   const switchUser = async (userId: string) => {
     setIsLoading(true);
+
+    // Clear active selections
+    setSelectedSpaceState(null);
+    setSelectedListState(null);
+    setSelectedChannelState(null);
+    setSelectedNoteState(null);
+    setSelectedSketchState(null);
+
+    // Clear user-specific list stores
+    setChannels([]);
+    setSpaces([]);
+    setLists([]);
+    setTasks([]);
+    setMessages([]);
+    setInbox([]);
+
     try {
-      await api.switchActiveUser(userId);
+      const data = await api.switchActiveUser(userId);
+      if ((data as any).token) {
+        sessionStorage.setItem('socketToken', (data as any).token);
+      }
       await triggerSync();
     } catch (err: any) {
       setError(err.message);
@@ -451,9 +624,9 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // Hierarchy
-  const createSpace = async (name: string, color: string, icon: string, isPrivate: boolean) => {
+  const createSpace = async (name: string, color: string, icon: string, isPrivate: boolean, memberIds?: string[]) => {
     try {
-      const generated = await api.createSpace({ name, color, icon, isPrivate });
+      const generated = await api.createSpace({ name, color, icon, isPrivate, memberIds });
       await triggerSync();
       setSelectedSpace(generated);
     } catch (err: any) {
@@ -755,7 +928,7 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const res = await api.acceptChatRequest(requestId);
       const reqs = await api.getChatRequests();
       setChatRequests(reqs);
-      
+
       await triggerSync();
       if (res.channel) {
         setSelectedChannel(res.channel);
@@ -822,13 +995,16 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Bidirectional routing via url hash
   useEffect(() => {
     const handleHashChange = () => {
+      const loggedIn = sessionStorage.getItem('isLoggedIn') === 'true' || localStorage.getItem('isLoggedIn') === 'true';
+      if (!loggedIn) return;
+
       const hash = window.location.hash;
       if (!hash || !hash.startsWith('#/')) return;
-      
+
       const parts = hash.substring(2).split('?');
       const viewPath = parts[0] as ViewType;
       const queryStr = parts[1] || '';
-      
+
       const params = new URLSearchParams(queryStr);
       const spaceId = params.get('space');
       const listId = params.get('list');
@@ -840,7 +1016,7 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (validViews.includes(viewPath) && viewPath !== currentView) {
         setCurrentView(viewPath);
       }
-      
+
       if (spaces.length > 0 && spaceId) {
         const found = spaces.find(s => s.id === spaceId) || null;
         if (found && found.id !== selectedSpace?.id) {
@@ -874,26 +1050,30 @@ export const FlowProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     window.addEventListener('hashchange', handleHashChange);
-    if (spaces.length > 0 || lists.length > 0 || channels.length > 0) {
+    const loggedIn = sessionStorage.getItem('isLoggedIn') === 'true' || localStorage.getItem('isLoggedIn') === 'true';
+    if (loggedIn && (spaces.length > 0 || lists.length > 0 || channels.length > 0)) {
       handleHashChange();
     }
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [spaces, lists, channels, notes, sketches]);
+  }, [spaces, lists, channels, notes, sketches, activeUser?.id]);
 
   useEffect(() => {
+    const loggedIn = sessionStorage.getItem('isLoggedIn') === 'true' || localStorage.getItem('isLoggedIn') === 'true';
+    if (!loggedIn) return;
+
     const params = new URLSearchParams();
     if (selectedSpace) params.set('space', selectedSpace.id);
     if (selectedList) params.set('list', selectedList.id);
     if (selectedChannel) params.set('channel', selectedChannel.id);
     if (selectedNote) params.set('note', selectedNote.id);
     if (selectedSketch) params.set('sketch', selectedSketch.id);
-    
+
     const query = params.toString();
     const newHash = `#/${currentView}${query ? '?' + query : ''}`;
     if (window.location.hash !== newHash) {
       window.location.hash = newHash;
     }
-  }, [currentView, selectedSpace?.id, selectedList?.id, selectedChannel?.id, selectedNote?.id, selectedSketch?.id]);
+  }, [currentView, selectedSpace?.id, selectedList?.id, selectedChannel?.id, selectedNote?.id, selectedSketch?.id, activeUser?.id]);
 
   return (
     <FlowContext.Provider value={{

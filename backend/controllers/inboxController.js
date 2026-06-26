@@ -7,8 +7,8 @@ import { dbService } from '../services/db.js';
 export const inboxController = {
   getInbox: async (req, res) => {
     try {
-      const inbox = await dbService.getCollection('notifications');
-      const filtered = inbox.filter(n => n.userId === req.userId);
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const filtered = await dbService.getCollection('notifications', { userId: req.userId, workspaceId });
       res.json(filtered);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -27,13 +27,12 @@ export const inboxController = {
 
   markAllRead: async (req, res) => {
     try {
-      const inbox = await dbService.getCollection('notifications');
       const activeUser = req.userId;
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const unreadInbox = await dbService.getCollection('notifications', { userId: activeUser, isRead: false, workspaceId });
 
-      for (const item of inbox) {
-        if (item.userId === activeUser && !item.isRead) {
-          await dbService.updateItem('notifications', item.id, { isRead: true });
-        }
+      for (const item of unreadInbox) {
+        await dbService.updateItem('notifications', item.id, { isRead: true });
       }
 
       res.json({ success: true });
@@ -61,6 +60,7 @@ export const inboxController = {
       if (!title) return res.status(400).json({ error: "Reminder title is required." });
 
       const activeUser = req.userId;
+      const workspaceId = req.user.workspaceId || 'w-1';
       const reminder = {
         userId: activeUser,
         type: "ASSIGNMENT",
@@ -70,6 +70,7 @@ export const inboxController = {
         entityType: "TASK",
         isRead: false,
         isSaved: true,
+        workspaceId,
         createdAt: new Date().toISOString()
       };
 

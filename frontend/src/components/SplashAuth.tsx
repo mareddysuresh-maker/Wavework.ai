@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useFlow } from '../lib/FlowContext';
 import { api } from '../lib/api';
-import { Sparkles, Mail, Lock, User as UserIcon, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
+import { Sparkles, Mail, Lock, User as UserIcon, CheckCircle2, AlertTriangle, ArrowRight, Building } from 'lucide-react';
 
 interface SplashAuthProps {
   onSuccess: () => void;
@@ -9,7 +9,14 @@ interface SplashAuthProps {
 
 export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
   const { triggerSync } = useFlow();
-  const [isSignUp, setIsSignUp] = useState(false);
+  const [workspaceExists, setWorkspaceExists] = useState<boolean | null>(null);
+  const [workspaces, setWorkspaces] = useState<any[]>([]);
+  const [showSelection, setShowSelection] = useState(false);
+  const [tempAuth, setTempAuth] = useState<{ user: any; token: string } | null>(null);
+  const [workspaceNameInput, setWorkspaceNameInput] = useState('');
+  const [inviteId, setInviteId] = useState<string | null>(null);
+  const [invitation, setInvitation] = useState<any | null>(null);
+
   const [isForgot, setIsForgot] = useState(false);
   const [isVerifyOtp, setIsVerifyOtp] = useState(false);
   const [otpCode, setOtpCode] = useState('');
@@ -19,33 +26,71 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState<'ADMIN' | 'EMPLOYEE'>('EMPLOYEE');
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [demoUsers, setDemoUsers] = useState<any[]>([]);
 
-  // Pull dynamic workspace users from database on load
+  // Pull dynamic workspace status and users on load
   useEffect(() => {
-    api.getPublicUsers()
-      .then(setDemoUsers)
-      .catch((err) => console.log("Splash could not resolve public user list:", err.message));
+    const init = async () => {
+      try {
+        api.getPublicUsers()
+          .then(setDemoUsers)
+          .catch((err) => console.log("Splash could not resolve public user list:", err.message));
+
+        const existsRes = await api.checkWorkspaceExists();
+        setWorkspaceExists(existsRes.workspaceExists);
+
+        const params = new URLSearchParams(window.location.search);
+        const urlInviteId = params.get('inviteId');
+        if (urlInviteId) {
+          setInviteId(urlInviteId);
+          setLoading(true);
+          try {
+            const invite = await api.getInvitationById(urlInviteId);
+            setInvitation(invite);
+            setEmail(invite.email);
+          } catch (err: any) {
+            setError(err.message || "Invalid or expired invitation link.");
+          } finally {
+            setLoading(false);
+          }
+        }
+      } catch (err: any) {
+        console.error("Initialization failed:", err);
+      }
+    };
+    init();
   }, []);
 
-  // Auto-fill from invitation parameters if clicked from email
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const inviteEmail = params.get('inviteEmail');
-    const inviteName = params.get('inviteName');
-    
-    if (inviteEmail) {
-      setEmail(inviteEmail);
-      setIsSignUp(true);
+  const handleSelectWorkspace = async (workspaceId: string) => {
+    if (!tempAuth) return;
+    setError(null);
+    setSuccessMsg(null);
+    setLoading(true);
+    try {
+      const data = await api.switchWorkspace(workspaceId);
+      if (data.success) {
+        sessionStorage.setItem('activeUserId', data.user.id);
+        localStorage.setItem('activeUserId', data.user.id);
+        sessionStorage.setItem('isLoggedIn', 'true');
+        localStorage.setItem('isLoggedIn', 'true');
+        if (data.token) {
+          sessionStorage.setItem('socketToken', data.token);
+        }
+        setSuccessMsg(`Connected! Entering workspace...`);
+        setTimeout(async () => {
+          await triggerSync();
+          onSuccess();
+        }, 1200);
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to select workspace.');
+    } finally {
+      setLoading(false);
     }
-    if (inviteName) {
-      setName(inviteName);
-    }
-  }, []);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,15 +99,39 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
     setLoading(true);
 
     try {
-      if (isSignUp) {
-        if (!name.trim() || !email.trim() || !password.trim()) {
-          throw new Error('Please fill out all required fields.');
+      if (workspaceExists === false) {
+        // Setup First Workspace Flow
+        if (!workspaceNameInput.trim() || !name.trim() || !email.trim() || !password.trim()) {
+          throw new Error('Please fill out all fields.');
         }
-        const data = await api.signup({
+        const data = await api.setupFirstWorkspace({
+          workspaceName: workspaceNameInput.trim(),
           name: name.trim(),
           email: email.trim(),
+          password
+        });
+        if (data.success) {
+          sessionStorage.setItem('activeUserId', data.user.id);
+          localStorage.setItem('activeUserId', data.user.id);
+          sessionStorage.setItem('isLoggedIn', 'true');
+          localStorage.setItem('isLoggedIn', 'true');
+          if (data.token) {
+            sessionStorage.setItem('socketToken', data.token);
+          }
+          setSuccessMsg(`Workspace created! Welcome, ${data.user.name}!`);
+          setTimeout(async () => {
+            await triggerSync();
+            onSuccess();
+          }, 1500);
+        }
+      } else if (inviteId) {
+        // Flow B: Accept Invitation
+        if (!name.trim() || !password.trim()) {
+          throw new Error('Please fill out all required fields.');
+        }
+        const data = await api.acceptInvitation(inviteId, {
+          name: name.trim(),
           password,
-          role,
         });
         
         if (data.success) {
@@ -70,37 +139,48 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
           localStorage.setItem('activeUserId', data.user.id);
           sessionStorage.setItem('isLoggedIn', 'true');
           localStorage.setItem('isLoggedIn', 'true');
-          setSuccessMsg(`Welcome, ${data.user.name}! Your workspace is ready.`);
+          if (data.token) {
+            sessionStorage.setItem('socketToken', data.token);
+          }
+          setSuccessMsg(`Welcome, ${data.user.name}! Your account has been setup.`);
           setTimeout(async () => {
             await triggerSync();
             // Clean invitation params out of URL
             const cleanUrl = new URL(window.location.href);
-            cleanUrl.searchParams.delete('inviteEmail');
-            cleanUrl.searchParams.delete('inviteName');
+            cleanUrl.searchParams.delete('inviteId');
             window.history.pushState({}, '', cleanUrl.toString());
             onSuccess();
           }, 1500);
         }
       } else {
+        // Flow C: Login
         if (!email.trim() || !password.trim()) {
           throw new Error('Please fill out both your email and password.');
         }
         const data = await api.login({
           email: email.trim(),
           password,
-          role,
         });
 
         if (data.success) {
-          sessionStorage.setItem('activeUserId', data.user.id);
-          localStorage.setItem('activeUserId', data.user.id);
-          sessionStorage.setItem('isLoggedIn', 'true');
-          localStorage.setItem('isLoggedIn', 'true');
-          setSuccessMsg(`Welcome back, ${data.user.name}! Connecting workspace...`);
-          setTimeout(async () => {
-            await triggerSync();
-            onSuccess();
-          }, 1200);
+          if (data.workspaces && data.workspaces.length > 1) {
+            setWorkspaces(data.workspaces);
+            setTempAuth({ user: data.user, token: data.token });
+            setShowSelection(true);
+          } else {
+            sessionStorage.setItem('activeUserId', data.user.id);
+            localStorage.setItem('activeUserId', data.user.id);
+            sessionStorage.setItem('isLoggedIn', 'true');
+            localStorage.setItem('isLoggedIn', 'true');
+            if (data.token) {
+              sessionStorage.setItem('socketToken', data.token);
+            }
+            setSuccessMsg(`Welcome back, ${data.user.name}! Connecting workspace...`);
+            setTimeout(async () => {
+              await triggerSync();
+              onSuccess();
+            }, 1200);
+          }
         }
       }
     } catch (err: any) {
@@ -160,7 +240,6 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
         setTimeout(() => {
           setIsVerifyOtp(false);
           setIsForgot(false);
-          setIsSignUp(false);
           setSuccessMsg(null);
           setError(null);
         }, 2000);
@@ -172,11 +251,9 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
     }
   };
 
-  const selectDemoUser = (demoEmail: string, demoRole: 'ADMIN' | 'EMPLOYEE') => {
+  const selectDemoUser = (demoEmail: string) => {
     setEmail(demoEmail);
     setPassword('password123');
-    setRole(demoRole);
-    setIsSignUp(false);
     setError(null);
   };
 
@@ -208,15 +285,32 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
             </div>
           </div>
 
-          <div className="mt-12 pt-8 border-t border-slate-800/40">
-            <div className="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-3">Workspace Profiles</div>
-            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-              {demoUsers.map((u) => {
-                const userRoleDisplay = u.role === 'ADMIN' || u.role === 'OWNER' ? 'ADMIN' : 'EMPLOYEE';
-                return (
+          {workspaceExists && demoUsers.length > 0 && (
+            <div className="mt-12 pt-8 border-t border-slate-800/40">
+              <div className="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-3">Workspace Profiles</div>
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                <button 
+                  type="button"
+                  onClick={() => selectDemoUser('client@flowup.io')}
+                  className="w-full flex items-center justify-between p-2 rounded-lg text-left text-xs bg-indigo-950/60 hover:bg-indigo-900/80 border border-indigo-500/60 transition group cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center font-black text-[10px]">
+                      C
+                    </div>
+                    <div>
+                      <span className="font-bold text-white group-hover:text-white transition">Client Demo</span>
+                      <p className="text-[10px] text-indigo-200">client@flowup.io</p>
+                    </div>
+                  </div>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase shrink-0 bg-indigo-800 text-indigo-100">
+                    SUPER_ADMIN
+                  </span>
+                </button>
+                {demoUsers.filter(u => u.email !== 'client@flowup.io').map((u) => (
                   <button 
                     key={u.id}
-                    onClick={() => selectDemoUser(u.email, userRoleDisplay)}
+                    onClick={() => selectDemoUser(u.email)}
                     className="w-full flex items-center justify-between p-2 rounded-lg text-left text-xs bg-slate-900/60 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-500/40 transition group cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
@@ -229,57 +323,51 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                       </div>
                     </div>
                     <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase shrink-0 ${
-                      u.role === 'ADMIN' || u.role === 'OWNER' ? 'bg-indigo-950/80 text-indigo-300' : 'bg-emerald-950/80 text-emerald-300'
+                      u.role === 'SUPER_ADMIN' || u.role === 'ADMIN' || u.role === 'OWNER' ? 'bg-indigo-950/80 text-indigo-300' : 'bg-emerald-950/80 text-emerald-300'
                     }`}>
                       {u.role}
                     </span>
                   </button>
-                );
-              })}
-              {demoUsers.length === 0 && (
-                <p className="text-xxs text-slate-500 italic text-center py-2">No workspace profiles found.</p>
-              )}
+                ))}
+              </div>
+              <div className="text-[10px] text-slate-500 text-center mt-3">Demo account password: <code className="text-slate-400 bg-slate-900/80 px-1 rounded">password123</code></div>
             </div>
-            <div className="text-[10px] text-slate-500 text-center mt-3">Demo account password: <code className="text-slate-400 bg-slate-900/80 px-1 rounded">password123</code></div>
-          </div>
+          )}
         </div>
 
         {/* Right column: Auth inputs Form card */}
         <div className="md:col-span-7 bg-slate-950 p-8 md:p-12 flex flex-col justify-center">
           <div className="max-w-md mx-auto w-full">
-            {/* Header / Tabs switcher */}
+            {/* Header */}
             <div className="flex justify-between items-baseline mb-8">
               <div>
                 <h2 className="text-2xl font-bold text-white tracking-tight">
-                  {isForgot 
-                    ? 'Reset Password Request' 
-                    : isVerifyOtp 
-                      ? 'Verify Passage OTP' 
-                      : isSignUp 
-                        ? 'Create Workspace Account' 
-                        : 'Sign in to Workspace'}
+                  {showSelection
+                    ? 'Select Workspace'
+                    : isForgot 
+                      ? 'Reset Password Request' 
+                      : isVerifyOtp 
+                        ? 'Verify Passage OTP' 
+                        : inviteId
+                          ? 'Accept Workspace Invitation'
+                          : workspaceExists === false
+                            ? 'Setup Workspace'
+                            : 'Sign in to Workspace'}
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  {isForgot 
-                    ? 'Receive a secure passcode in your inbox.' 
-                    : isVerifyOtp 
-                      ? 'Enter the OTP passcode and set your new password.' 
-                      : 'Please enter your workspace details below.'}
+                  {showSelection
+                    ? 'Choose which project environment you would like to enter.'
+                    : isForgot 
+                      ? 'Receive a secure passcode in your inbox.' 
+                      : isVerifyOtp 
+                        ? 'Enter the OTP passcode and set your new password.' 
+                        : inviteId
+                          ? `Set up your profile to join the workspace.`
+                          : workspaceExists === false
+                            ? 'Configure your first workspace and administrator account.'
+                            : 'Please enter your workspace credentials below.'}
                 </p>
               </div>
-              
-              {!isForgot && !isVerifyOtp && (
-                <button 
-                  onClick={() => {
-                    setIsSignUp(!isSignUp);
-                    setError(null);
-                    setSuccessMsg(null);
-                  }}
-                  className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition underline cursor-pointer"
-                >
-                  {isSignUp ? 'Switch to Sign In' : 'Create an account'}
-                </button>
-              )}
             </div>
 
             {/* Error alerts */}
@@ -287,7 +375,7 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
               <div className="mb-6 p-4 bg-rose-950/40 border border-rose-800 rounded-xl flex items-start gap-2.5 text-rose-300 text-xs leading-relaxed animate-shake">
                 <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                 <div>
-                  <span className="font-bold">Execution Error:</span> {error}
+                  <span className="font-bold">Error:</span> {error}
                 </div>
               </div>
             )}
@@ -308,11 +396,41 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
               </div>
             )}
 
-            {isForgot ? (
-              /* Phase 1: Request OTP Form */
+            {showSelection ? (
+              /* Workspace Selection View */
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  {workspaces.map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => handleSelectWorkspace(w.id)}
+                      className="w-full flex items-center justify-between p-4 rounded-xl text-left bg-slate-900 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-500/40 transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
+                          {w.logoUrl ? (
+                            <img src={w.logoUrl} alt={w.name} className="h-6 w-6 object-contain rounded" />
+                          ) : (
+                            <Building className="h-5 w-5" />
+                          )}
+                        </div>
+                        <div>
+                          <span className="font-bold text-sm text-slate-200">{w.name}</span>
+                          <div className="text-xs text-slate-500 font-mono">ID: {w.id}</div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] px-2 py-1 rounded bg-indigo-950 text-indigo-300 font-bold uppercase">
+                        {w.role}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : isForgot ? (
+              /* Request OTP Form */
               <form onSubmit={handleRequestOtp} className="space-y-5">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-slate-300">Your Preferred Email Address</label>
+                  <label className="text-xs font-medium text-slate-300">Your Email Address</label>
                   <div className="relative">
                     <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
                     <input 
@@ -361,17 +479,17 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                     <span className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                   ) : (
                     <>
-                      <span>Send Recovery One-Time Passcode</span>
+                      <span>Send Recovery OTP</span>
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}
                 </button>
               </form>
             ) : isVerifyOtp ? (
-              /* Phase 2: Verify OTP & Change Password Form */
+              /* Verify OTP & Change Password Form */
               <form onSubmit={handleVerifyOtpReset} className="space-y-5">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-slate-300">Registered Email Address</label>
+                  <label className="text-xs font-medium text-slate-300">Email Address</label>
                   <div className="relative">
                     <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-600" />
                     <input 
@@ -384,7 +502,7 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-slate-300 font-semibold text-indigo-400">6-Digit OTP Transit Code</label>
+                  <label className="text-xs font-medium text-slate-300 font-semibold text-indigo-400">6-Digit OTP Code</label>
                   <div className="relative">
                     <Sparkles className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-indigo-400" />
                     <input 
@@ -444,24 +562,38 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                   )}
                 </button>
               </form>
-            ) : (
-              /* Phase 3: Login or Signup Forms */
+            ) : workspaceExists === false ? (
+              /* Setup Workspace (First Time) Form */
               <form onSubmit={handleSubmit} className="space-y-5">
-                {isSignUp && (
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-slate-300">Name</label>
-                    <div className="relative">
-                      <UserIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
-                      <input 
-                        type="text" 
-                        placeholder="Jane Doe"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
-                      />
-                    </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-300">Workspace Name</label>
+                  <div className="relative">
+                    <Building className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Acme Corp"
+                      value={workspaceNameInput}
+                      onChange={(e) => setWorkspaceNameInput(e.target.value)}
+                      required
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+                    />
                   </div>
-                )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-300">Full Name</label>
+                  <div className="relative">
+                    <UserIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Jane Doe"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      required
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+                    />
+                  </div>
+                </div>
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-slate-300">Email Address</label>
@@ -469,31 +601,17 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                     <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
                     <input 
                       type="email" 
-                      placeholder="user@example.com"
+                      placeholder="e.g. jane@acme.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
+                      required
                       className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex justify-between items-baseline">
-                    <label className="text-xs font-medium text-slate-300">Secure Password</label>
-                    {!isSignUp && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsForgot(true);
-                          setError(null);
-                          setSuccessMsg(null);
-                        }}
-                        className="text-[11px] font-semibold text-indigo-400 hover:text-indigo-300"
-                      >
-                        Forgot password?
-                      </button>
-                    )}
-                  </div>
+                  <label className="text-xs font-medium text-slate-300">Secure Password</label>
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
                     <input 
@@ -501,49 +619,9 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                       placeholder="••••••••"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      required
                       className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
                     />
-                  </div>
-                </div>
-
-                {/* Role selector - satisfies user authorization criteria precisely */}
-                <div className="space-y-2 mt-4">
-                  <div className="flex justify-between items-baseline">
-                    <span className="text-xs font-medium text-slate-300">Select Workspace Role</span>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setRole('EMPLOYEE')}
-                      className={`p-3 rounded-xl border flex flex-col text-left transition relative cursor-pointer ${
-                        role === 'EMPLOYEE'
-                          ? 'border-indigo-500 bg-indigo-500/10 text-white'
-                          : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-700'
-                      }`}
-                    >
-                      <span className="text-sm font-semibold text-white">Employee</span>
-                      <span className="text-[10px] text-slate-400 mt-1">Submit tasks, chat, and collab settings</span>
-                      {role === 'EMPLOYEE' && (
-                        <span className="absolute top-2 right-2 flex h-2 w-2 rounded-full bg-indigo-500" />
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setRole('ADMIN')}
-                      className={`p-3 rounded-xl border flex flex-col text-left transition relative cursor-pointer ${
-                        role === 'ADMIN'
-                          ? 'border-indigo-500 bg-indigo-500/10 text-white'
-                          : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-700'
-                      }`}
-                    >
-                      <span className="text-sm font-semibold text-white">Admin / Owner</span>
-                      <span className="text-[10px] text-slate-400 mt-1">Full controls, assign tasks and spaces</span>
-                      {role === 'ADMIN' && (
-                        <span className="absolute top-2 right-2 flex h-2 w-2 rounded-full bg-indigo-500" />
-                      )}
-                    </button>
                   </div>
                 </div>
 
@@ -556,7 +634,123 @@ export const SplashAuth: React.FC<SplashAuthProps> = ({ onSuccess }) => {
                     <span className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                   ) : (
                     <>
-                      <span>{isSignUp ? 'Finalize Registration' : 'Authenticate Credentials'}</span>
+                      <span>Initialize Workspace</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+            ) : (
+              /* Accept Invitation OR Login Forms */
+              <form onSubmit={handleSubmit} className="space-y-5">
+                {/* Flow B: Accept Invitation fields */}
+                {inviteId && (
+                  <>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-slate-300">Email Address</label>
+                      <div className="relative">
+                        <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-600" />
+                        <input 
+                          type="email" 
+                          value={email}
+                          disabled
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-900 bg-slate-950/50 text-sm text-slate-500 cursor-not-allowed focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-slate-300">Your Full Name</label>
+                      <div className="relative">
+                        <UserIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                        <input 
+                          type="text" 
+                          placeholder="Jane Doe"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          required
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-slate-300">Secure Password</label>
+                      <div className="relative">
+                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                        <input 
+                          type="password" 
+                          placeholder="••••••••"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          required
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Flow C: Login fields */}
+                {!inviteId && (
+                  <>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-slate-300">Email Address</label>
+                      <div className="relative">
+                        <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                        <input 
+                          type="email" 
+                          placeholder="user@example.com"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          required
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-baseline">
+                        <label className="text-xs font-medium text-slate-300">Secure Password</label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsForgot(true);
+                            setError(null);
+                            setSuccessMsg(null);
+                          }}
+                          className="text-[11px] font-semibold text-indigo-400 hover:text-indigo-300"
+                        >
+                          Forgot password?
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                        <input 
+                          type="password" 
+                          placeholder="••••••••"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          required
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 px-5 rounded-xl transition shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-1.5 mt-2 cursor-pointer"
+                >
+                  {loading ? (
+                    <span className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <span>
+                        {inviteId ? 'Accept Invitation' : 'Sign In'}
+                      </span>
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}

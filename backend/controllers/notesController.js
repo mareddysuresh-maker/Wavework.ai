@@ -8,9 +8,7 @@ export const notesController = {
   // Notepad
   getNotes: async (req, res) => {
     try {
-      const notes = await dbService.getCollection('notes');
-      // Filter notes by requesting session user
-      const filtered = notes.filter(n => n.userId === req.userId);
+      const filtered = await dbService.getCollection('notes', { userId: req.userId });
       res.json(filtered);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -74,8 +72,7 @@ export const notesController = {
   // Interactive Sketches Whiteboard
   getSketches: async (req, res) => {
     try {
-      const sketches = await dbService.getCollection('sketches');
-      const filtered = sketches.filter(s => s.userId === req.userId);
+      const filtered = await dbService.getCollection('sketches', { userId: req.userId });
       res.json(filtered);
     } catch (error) {
       res.status(500).json({ error: error.message });

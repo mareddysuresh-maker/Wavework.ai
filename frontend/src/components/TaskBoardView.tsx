@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useFlow } from '../lib/FlowContext';
 import { Task } from '../types';
 import { api } from '../lib/api';
@@ -67,7 +67,15 @@ const getUserColorStyles = (colorClass: string | undefined | null) => {
   return { backgroundColor: '#4f46e5', color: '#ffffff' };
 };
 
-export const TaskBoardView: React.FC = () => {
+interface TaskBoardViewProps {
+  forceAssigneeFilter?: boolean;
+  defaultSubTab?: 'DASHBOARD' | 'LIST' | 'BOARD' | 'CALENDAR';
+}
+
+export const TaskBoardView: React.FC<TaskBoardViewProps> = ({
+  forceAssigneeFilter = false,
+  defaultSubTab = 'DASHBOARD'
+}) => {
   const { 
     selectedSpace, 
     selectedList, 
@@ -88,17 +96,21 @@ export const TaskBoardView: React.FC = () => {
   const [priorityFilter, setPriorityFilter] = useState('ALL');
   
   // Tab control: DASHBOARD, LIST, BOARD, CALENDAR (matching the 3 screenshots)
-  const [subTab, setSubTab] = useState<'DASHBOARD' | 'LIST' | 'BOARD' | 'CALENDAR'>('DASHBOARD');
+  const [subTab, setSubTab] = useState<'DASHBOARD' | 'LIST' | 'BOARD' | 'CALENDAR'>(defaultSubTab);
 
-  const isAdmin = activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER';
+  useEffect(() => {
+    setSubTab(defaultSubTab);
+  }, [defaultSubTab]);
+
+  const isAdmin = activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER' || activeUser?.role === 'SUPER_ADMIN';
   const isEmployee = !isAdmin;
 
   const getProgressForStatus = (status: string) => {
-    if (status === 'TODO') return 0;
-    if (status === 'IN_PROGRESS') return 25;
+    if (status === 'TODO') return 25;
+    if (status === 'IN_PROGRESS') return 50;
     if (status === 'IN_REVIEW') return 75;
     if (status === 'DONE') return 100;
-    return 0;
+    return 25;
   };
 
   // Calendar Date active tracking
@@ -127,8 +139,11 @@ export const TaskBoardView: React.FC = () => {
   const [newCheckItem, setNewCheckItem] = useState('');
 
   // Filter tasks to only match selected space and list
-  const activeSpaceListsIds = lists.filter(l => l.spaceId === selectedSpace?.id).map(l => l.id);
+  const activeSpaceListsIds = selectedSpace ? lists.filter(l => l.spaceId === selectedSpace.id).map(l => l.id) : [];
   const currentListTasks = tasks.filter(task => {
+    if (forceAssigneeFilter) {
+      return task.assigneeId === activeUser?.id;
+    }
     if (selectedList) {
       return task.listId === selectedList.id;
     } else {
@@ -253,6 +268,10 @@ export const TaskBoardView: React.FC = () => {
 
   // Move status wrapper
   const handleMoveStatus = async (task: Task, status: string) => {
+    if (task.assigneeId !== activeUser?.id) {
+      alert("Only the assigned employee can change the task status.");
+      return;
+    }
     await updateTask(task.id, { status: status as any });
   };
 
@@ -266,7 +285,7 @@ export const TaskBoardView: React.FC = () => {
     }
   };
 
-  if (!selectedSpace) {
+  if (!selectedSpace && !forceAssigneeFilter) {
     return (
       <div id="blank-space-view" className="flex-1 flex flex-col items-center justify-center bg-slate-50 p-8">
         <div className="max-w-md text-center">
@@ -281,7 +300,7 @@ export const TaskBoardView: React.FC = () => {
   }
 
   // Gather current lists inside selected space
-  const spaceLists = lists.filter(l => l.spaceId === selectedSpace.id);
+  const spaceLists = selectedSpace ? lists.filter(l => l.spaceId === selectedSpace.id) : [];
 
   return (
     <div className="flex-1 bg-slate-50 flex flex-col h-full font-sans overflow-hidden">
@@ -290,48 +309,57 @@ export const TaskBoardView: React.FC = () => {
       <div className="bg-white border-b border-slate-200 px-8 py-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4 flex-shrink-0">
         <div>
           <div className="flex items-center space-x-2 flex-wrap gap-y-2">
-            <span className="w-3 h-3 rounded-full" style={{ backgroundColor: selectedSpace.color }} />
-            <h2 className="text-xl font-bold text-slate-900">{selectedSpace.name} Space</h2>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
+            {forceAssigneeFilter ? (
+              <>
+                <div className="w-2.5 h-2.5 rounded-full bg-indigo-650" />
+                <h2 className="text-xl font-bold text-slate-900">My Tasks</h2>
+              </>
+            ) : selectedSpace ? (
+              <>
+                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: selectedSpace.color }} />
+                <h2 className="text-xl font-bold text-slate-900">{selectedSpace.name} Space</h2>
+                <ChevronRight className="w-4 h-4 text-slate-400" />
 
-            {/* List selector & manual custom list addition helper */}
-            <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-xs hover:border-slate-300 transition">
-              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">List:</span>
-              <select
-                value={selectedList ? selectedList.id : 'ALL'}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === 'ALL') {
-                    setSelectedList(null);
-                  } else {
-                    const found = spaceLists.find(l => l.id === val);
-                    if (found) setSelectedList(found);
-                  }
-                }}
-                className="bg-transparent border-none text-xs font-bold text-indigo-600 focus:outline-none focus:ring-0 cursor-pointer py-0 px-1"
-              >
-                <option value="ALL">All Lists</option>
-                {spaceLists.map(l => (
-                  <option key={l.id} value={l.id}>{l.name}</option>
-                ))}
-              </select>
+                {/* List selector & manual custom list addition helper */}
+                <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-xs hover:border-slate-300 transition">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">List:</span>
+                  <select
+                    value={selectedList ? selectedList.id : 'ALL'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'ALL') {
+                        setSelectedList(null);
+                      } else {
+                        const found = spaceLists.find(l => l.id === val);
+                        if (found) setSelectedList(found);
+                      }
+                    }}
+                    className="bg-transparent border-none text-xs font-bold text-indigo-600 focus:outline-none focus:ring-0 cursor-pointer py-0 px-1"
+                  >
+                    <option value="ALL">All Lists</option>
+                    {spaceLists.map(l => (
+                      <option key={l.id} value={l.id}>{l.name}</option>
+                    ))}
+                  </select>
 
-              {!isEmployee && (
-                <button
-                  onClick={async () => {
-                    const listName = prompt("Enter new task group list name:", "Tasks");
-                    if (listName && listName.trim()) {
-                      await createList(selectedSpace.id, undefined, listName.trim());
-                    }
-                  }}
-                  className="p-1 hover:bg-slate-200/50 rounded text-slate-500 hover:text-indigo-600 transition cursor-pointer flex items-center justify-center gap-1 text-[11px] font-bold border-l border-slate-200 pl-2"
-                  title="Create a new custom board list inside this space"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Add List</span>
-                </button>
-              )}
-            </div>
+                  {!isEmployee && (
+                    <button
+                      onClick={async () => {
+                        const listName = prompt("Enter new task group list name:", "Tasks");
+                        if (listName && listName.trim()) {
+                          await createList(selectedSpace.id, undefined, listName.trim());
+                        }
+                      }}
+                      className="p-1 hover:bg-slate-200/50 rounded text-slate-500 hover:text-indigo-600 transition cursor-pointer flex items-center justify-center gap-1 text-[11px] font-bold border-l border-slate-200 pl-2"
+                      title="Create a new custom board list inside this space"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Add List</span>
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : null}
           </div>
           <p className="text-[11px] font-medium font-mono text-indigo-500 mt-1 uppercase">wavework task boards & checklist views</p>
         </div>
@@ -438,8 +466,8 @@ export const TaskBoardView: React.FC = () => {
 
           let totalProgressSum = 0;
           filteredTasks.forEach(t => {
-            if (t.status === 'TODO') totalProgressSum += 0;
-            else if (t.status === 'IN_PROGRESS') totalProgressSum += 25;
+            if (t.status === 'TODO') totalProgressSum += 25;
+            else if (t.status === 'IN_PROGRESS') totalProgressSum += 50;
             else if (t.status === 'IN_REVIEW') totalProgressSum += 75;
             else if (t.status === 'DONE') totalProgressSum += 100;
           });
@@ -459,7 +487,7 @@ export const TaskBoardView: React.FC = () => {
                 <div className="bg-gradient-to-r from-indigo-900 to-indigo-950 p-6 rounded-2xl border border-indigo-800 text-white shadow-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <div>
                     <h3 className="text-lg font-bold tracking-tight">Your Productivity Insights</h3>
-                    <p className="text-xs text-indigo-200 mt-1">Personal statistics and active task progress metrics for {selectedSpace.name} Space</p>
+                    <p className="text-xs text-indigo-200 mt-1">Personal statistics and active task progress metrics for {selectedSpace?.name || 'Workspace'} Space</p>
                   </div>
                   <div className="bg-indigo-800/50 border border-indigo-750 px-4 py-2 rounded-xl text-center">
                     <span className="text-[10px] text-indigo-300 block uppercase font-mono tracking-wider font-bold">overall progress</span>
@@ -560,7 +588,7 @@ export const TaskBoardView: React.FC = () => {
                 <div className="bg-gradient-to-r from-indigo-900 to-indigo-950 p-6 rounded-2xl border border-indigo-800 text-white shadow-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <div>
                     <h3 className="text-lg font-bold tracking-tight">Spaces Aggregated metrics</h3>
-                    <p className="text-xs text-indigo-200 mt-1">Aggregated statistics and team-wide tracking for {selectedSpace.name} Space</p>
+                    <p className="text-xs text-indigo-200 mt-1">Aggregated statistics and team-wide tracking for {selectedSpace?.name || 'Workspace'} Space</p>
                   </div>
                   <div className="bg-indigo-800/50 border border-indigo-750 px-4 py-2 rounded-xl text-center">
                     <span className="text-[10px] text-indigo-300 block uppercase font-mono tracking-wider font-bold">overall progress</span>
@@ -737,7 +765,124 @@ export const TaskBoardView: React.FC = () => {
         {/* VIEW 1: ClickUp-style List View */}
         {subTab === 'LIST' && (
           <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-200">
-            {spaceLists.length === 0 ? (
+            {forceAssigneeFilter ? (
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                {/* List Group Header */}
+                <div className="bg-slate-50/50 border-b border-slate-100 px-5 py-3.5 flex items-center justify-between">
+                  <div className="flex items-center space-x-2.5">
+                    <FolderIcon className="w-4 h-4 text-slate-500" />
+                    <span className="text-xs font-bold text-slate-800">My Assigned Tasks</span>
+                    <span className="bg-slate-200 text-slate-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                      {filteredTasks.length} task{filteredTasks.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Status rows listing */}
+                <div className="divide-y divide-slate-100">
+                  {STATUS_COLUMNS.map(col => {
+                    const colTasks = filteredTasks.filter(t => t.status === col.id);
+                    
+                    return (
+                      <div key={col.id} className="py-2">
+                        {/* Status Header Label */}
+                        <div className="flex items-center space-x-2 px-5 py-1">
+                          <span className="w-2 h-2 rounded-full inline-block" style={{
+                            backgroundColor: col.id === 'TODO' ? '#94A3B8' : col.id === 'IN_PROGRESS' ? '#6366F1' : col.id === 'IN_REVIEW' ? '#F59E0B' : '#10B981'
+                          }} />
+                          <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">
+                            {col.name}
+                          </span>
+                          <span className="text-[9px] font-semibold text-slate-400 italic">
+                            ({colTasks.length})
+                          </span>
+                        </div>
+
+                        {/* Task rows */}
+                        <div className="mt-1 space-y-0.5">
+                          {colTasks.map(task => {
+                            const isDone = task.status === 'DONE';
+                            
+                            return (
+                              <div 
+                                key={task.id} 
+                                className="flex items-center justify-between border-y border-transparent hover:border-slate-150 py-1.5 px-5 hover:bg-indigo-50/15 transition group text-slate-700 text-xs"
+                              >
+                                <div className="flex items-center space-x-3.5 flex-1 min-w-0">
+                                  {/* Trigger complete toggle */}
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isDone}
+                                    onChange={async (e) => {
+                                      e.stopPropagation();
+                                      if (task.assigneeId !== activeUser?.id) {
+                                        alert("Only the assigned employee can change the task status.");
+                                        return;
+                                      }
+                                      const nextStatus = isDone ? 'TODO' : 'DONE';
+                                      await updateTask(task.id, { status: nextStatus });
+                                    }}
+                                    className="rounded text-indigo-600 focus:ring-0 cursor-pointer w-4 h-4 shrink-0 transition"
+                                  />
+
+                                  {/* Priority selection flag color */}
+                                  <select
+                                    value={task.priority || 'NONE'}
+                                    disabled={isEmployee}
+                                    onChange={async (e) => {
+                                      await updateTask(task.id, { priority: e.target.value as any });
+                                    }}
+                                    className="text-[11px] font-bold border-none bg-transparent hover:bg-slate-100 py-0.5 px-2 rounded cursor-pointer shrink-0 focus:ring-0 focus:outline-none transition"
+                                  >
+                                    <option value="NONE">⚪ None</option>
+                                    <option value="LOW">⚪ Low</option>
+                                    <option value="NORMAL">🔵 Normal</option>
+                                    <option value="HIGH">🟡 High</option>
+                                    <option value="URGENT">🔴 Urgent</option>
+                                  </select>
+
+                                  {/* Task Name clickable */}
+                                  <button
+                                    onClick={() => handleOpenInspector(task)}
+                                    className={`font-semibold truncate text-left hover:text-indigo-600 transition ${
+                                      isDone ? 'line-through text-slate-400 font-medium' : 'text-slate-800'
+                                    }`}
+                                  >
+                                    {task.name}
+                                  </button>
+
+                                  {/* Progress display */}
+                                  <span className="text-[9.5px] bg-slate-100 border border-slate-200 text-slate-600 font-bold px-1.5 py-0.5 rounded flex items-center shrink-0">
+                                    {getProgressForStatus(task.status)}%
+                                  </span>
+                                </div>
+
+                                {/* Attributes side alignments */}
+                                <div className="flex items-center space-x-6 flex-shrink-0">
+                                  {/* Due Date Inline Date picker */}
+                                  <div className="flex items-center text-[11px] text-slate-500">
+                                    <span className="text-[10px] text-slate-400 mr-1 font-semibold uppercase">Due:</span>
+                                    <input 
+                                      type="date" 
+                                      value={task.dueDate || ''}
+                                      disabled={isEmployee}
+                                      onChange={async (e) => {
+                                        await updateTask(task.id, { dueDate: e.target.value || undefined });
+                                      }}
+                                      className="text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border-none rounded py-0.5 px-1.5 focus:ring-0 focus:outline-none cursor-pointer"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : spaceLists.length === 0 ? (
               <div className="bg-white border border-slate-200 rounded-xl p-8 text-center shadow-xs">
                 <FolderIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                 <h3 className="text-sm font-bold text-slate-800">No Task Lists are available</h3>
@@ -852,6 +997,10 @@ export const TaskBoardView: React.FC = () => {
                                         checked={isDone}
                                         onChange={async (e) => {
                                           e.stopPropagation();
+                                          if (task.assigneeId !== activeUser?.id) {
+                                            alert("Only the assigned employee can change the task status.");
+                                            return;
+                                          }
                                           const nextStatus = isDone ? 'TODO' : 'DONE';
                                           await updateTask(task.id, { status: nextStatus });
                                         }}
@@ -931,7 +1080,7 @@ export const TaskBoardView: React.FC = () => {
                                       </div>
 
                                       {/* Delete action */}
-                                      {!isEmployee && (
+                                      {(isAdmin || task.taskSource === 'self_assigned' || task.deleteRequestStatus === 'approved') ? (
                                         confirmingTaskId === task.id ? (
                                           <div 
                                             className="flex items-center space-x-1 animate-fade-in"
@@ -968,6 +1117,38 @@ export const TaskBoardView: React.FC = () => {
                                           >
                                             <Trash2 className="w-3.5 h-3.5" />
                                           </button>
+                                        )
+                                      ) : (
+                                        isEmployee && task.taskSource === 'admin_assigned' && (
+                                          task.deleteRequestStatus === 'pending' ? (
+                                            <span 
+                                              className="text-[9px] font-bold text-amber-600 bg-amber-50 border border-amber-100 rounded px-1.5 py-0.5 cursor-help"
+                                              onClick={(e) => e.stopPropagation()}
+                                              title={`Request justification: "${task.deleteRequestReason || 'None provided'}"`}
+                                            >
+                                              ⏳ Pending
+                                            </span>
+                                          ) : (
+                                            <button
+                                              onClick={async (e) => {
+                                                e.stopPropagation();
+                                                const reason = prompt("Enter justification for requesting task deletion:");
+                                                if (reason && reason.trim()) {
+                                                  try {
+                                                    await api.requestDeleteTask(task.id, reason.trim());
+                                                    await triggerSync();
+                                                    alert("Deletion request sent successfully.");
+                                                  } catch (err: any) {
+                                                    alert(err.message || "Failed to submit deletion request.");
+                                                  }
+                                                }
+                                              }}
+                                              className="opacity-0 group-hover:opacity-100 text-[10px] font-bold text-indigo-600 hover:text-indigo-850 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/55 px-1.5 py-0.5 rounded transition cursor-pointer shrink-0"
+                                              title="Request deletion"
+                                            >
+                                              Request Delete
+                                            </button>
+                                          )
                                         )
                                       )}
                                     </div>
@@ -1176,8 +1357,12 @@ export const TaskBoardView: React.FC = () => {
                         <div
                           key={task.id}
                           onClick={() => handleOpenInspector(task)}
-                          draggable
+                          draggable={task.assigneeId === activeUser?.id}
                           onDragStart={(e) => {
+                            if (task.assigneeId !== activeUser?.id) {
+                              e.preventDefault();
+                              return;
+                            }
                             e.dataTransfer.setData('text/plain', task.id);
                             setDraggingTaskId(task.id);
                             e.dataTransfer.effectAllowed = 'move';
@@ -1388,7 +1573,7 @@ export const TaskBoardView: React.FC = () => {
                           </span>
 
                           {/* Quick add trigger button */}
-                          {!isEmployee && (
+                          {!isEmployee && !forceAssigneeFilter && (
                             <button
                               onClick={async () => {
                                 const title = prompt("Enter new task title for " + cell.date.toLocaleDateString() + ":");
@@ -1535,7 +1720,7 @@ export const TaskBoardView: React.FC = () => {
           <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6">
             <span className="text-xs font-bold uppercase tracking-widest text-slate-400 font-mono">Core Task Inspector</span>
             <div className="flex items-center space-x-2">
-              {!isEmployee && (
+              {(isAdmin || selectedTask.taskSource === 'self_assigned' || selectedTask.deleteRequestStatus === 'approved') ? (
                 isConfirmingDeleteTask ? (
                   <button
                     onClick={async () => {
@@ -1559,6 +1744,37 @@ export const TaskBoardView: React.FC = () => {
                   >
                     <Trash2 className="w-4.5 h-4.5" />
                   </button>
+                )
+              ) : (
+                isEmployee && selectedTask.taskSource === 'admin_assigned' && (
+                  selectedTask.deleteRequestStatus === 'pending' ? (
+                    <span 
+                      className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-250 px-2.5 py-1 rounded-md flex items-center gap-1.5 cursor-help"
+                      title={`Request justification: "${selectedTask.deleteRequestReason || 'None provided'}"`}
+                    >
+                      ⏳ Deletion Pending
+                    </span>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        const reason = prompt("Enter justification for requesting task deletion:");
+                        if (reason && reason.trim()) {
+                          try {
+                            const updated = await api.requestDeleteTask(selectedTask.id, reason.trim());
+                            setSelectedTask(updated);
+                            await triggerSync();
+                            alert("Deletion request sent successfully.");
+                          } catch (err: any) {
+                            alert(err.message || "Failed to submit deletion request.");
+                          }
+                        }
+                      }}
+                      className="text-[10.5px] font-bold text-indigo-650 hover:text-indigo-850 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                      title="Request Admin to delete this task"
+                    >
+                      <span>❓ Request Delete</span>
+                    </button>
+                  )
                 )
               )}
               <button 
@@ -1704,6 +1920,10 @@ export const TaskBoardView: React.FC = () => {
                   value={selectedTask.status}
                   onChange={(e) => {
                     const status = e.target.value as any;
+                    if (selectedTask.assigneeId !== activeUser?.id) {
+                      alert("Only the assigned employee can change the task status.");
+                      return;
+                    }
                     setSelectedTask({ ...selectedTask, status });
                     updateTask(selectedTask.id, { status });
                   }}

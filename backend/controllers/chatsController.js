@@ -5,6 +5,37 @@
  */
 
 import { dbService } from '../services/db.js';
+import { z } from 'zod';
+import { logActivity } from '../utils/activityLogger.js';
+
+
+const createChannelSchema = z.object({
+  name: z.string().min(1, { message: "Channel or group name is required." }).optional(),
+  description: z.string().optional(),
+  isPrivate: z.boolean().optional(),
+  isDM: z.boolean().optional(),
+  isGroup: z.boolean().optional(),
+  memberIds: z.array(z.string()).optional(),
+  logoUrl: z.string().optional()
+}).refine(data => data.name || data.isDM, {
+  message: "Channel or group name is required.",
+  path: ["name"]
+});
+
+const sendMessageSchema = z.object({
+  content: z.string().optional(),
+  parentId: z.string().optional(),
+  taskId: z.string().optional(),
+  attachments: z.array(z.object({
+    name: z.string(),
+    url: z.string(),
+    type: z.string(),
+    size: z.number()
+  })).optional()
+}).refine(data => data.content || (data.attachments && data.attachments.length > 0), {
+  message: "Message content or attachments required.",
+  path: ["content"]
+});
 import fs from 'fs';
 import path from 'path';
 import nodemailer from 'nodemailer';
@@ -13,6 +44,20 @@ import { redisService } from '../services/redisService.js';
 import { getSocketIO } from '../services/socketService.js';
 
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+
+const broadcastChannelUpdate = (channel) => {
+  const io = getSocketIO();
+  if (!io || !channel) return;
+  
+  if (channel.isPrivate || channel.isDM) {
+    const memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
+    memberIds.forEach(memberId => {
+      io.to(`user:${memberId}`).emit("channel:updated", channel);
+    });
+  } else {
+    io.to("workspace:w-1").emit("channel:updated", channel);
+  }
+};
 
 async function sendEmailInvitation(senderName, receiverEmail, receiverName, signupUrl) {
   const host = process.env.SMTP_HOST;
@@ -120,21 +165,13 @@ export const chatsController = {
   // Get channels/DMs active for the logged-in user
   getChannels: async (req, res) => {
     try {
-      const channels = await dbService.getCollection('channels');
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const channels = await dbService.getCollection('channels', { workspaceId });
       const userId = req.userId;
-      const SEEDED_USER_IDS = ["u-1", "u-2", "u-3", "u-4"];
-      const isSeededUser = SEEDED_USER_IDS.includes(userId);
 
-      // Filter channels:
-      // - Seeded users see public channels + channels they belong to
-      // - New users only see channels where they are a member (excluding old mock channels unless explicitly added)
       const visibleChannels = channels.filter(ch => {
-        if (isSeededUser) {
-          if (!ch.isPrivate && !ch.isDM) return true;
-          return Array.isArray(ch.memberIds) && ch.memberIds.includes(userId);
-        } else {
-          return Array.isArray(ch.memberIds) && ch.memberIds.includes(userId);
-        }
+        if (!ch.isPrivate && !ch.isDM) return true;
+        return Array.isArray(ch.memberIds) && ch.memberIds.includes(userId);
       });
 
       res.json(visibleChannels);
@@ -143,27 +180,42 @@ export const chatsController = {
     }
   },
 
-  // Create channel or DM
   createChannel: async (req, res) => {
     try {
-      const { name, description, isPrivate, isDM, isGroup, memberIds, logoUrl } = req.body;
-      if (!name && !isDM) return res.status(400).json({ error: "Channel or group name is required." });
+      const parseResult = createChannelSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return res.status(400).json({ error: parseResult.error.errors[0].message });
+      }
 
-      const users = await dbService.getCollection('users');
+      const { name, description, isPrivate, isDM, isGroup, memberIds, logoUrl } = parseResult.data;
+      const workspaceId = req.user.workspaceId || 'w-1';
+
+      const users = await dbService.getCollection('users', { workspaceId });
       let resolvedMembers = memberIds || [req.userId];
       
-      // If creating a public group or general channel, default to all users if empty
       if (!isPrivate && !isDM && (!memberIds || memberIds.length === 0)) {
         resolvedMembers = users.map(u => u.id);
       }
 
-      // Ensure the creator themselves is in the group members
       if (!resolvedMembers.includes(req.userId)) {
         resolvedMembers.push(req.userId);
       }
 
+      if (isDM) {
+        const allChannels = await dbService.getCollection('channels', { workspaceId });
+        const existingDm = allChannels.find(ch => {
+          if (!ch.isDM) return false;
+          const chMembers = Array.isArray(ch.memberIds) ? ch.memberIds : [];
+          return chMembers.length === resolvedMembers.length &&
+                 resolvedMembers.every(id => chMembers.includes(id));
+        });
+        if (existingDm) {
+          return res.status(200).json(existingDm);
+        }
+      }
+
       const newChannel = {
-        workspaceId: "w-1",
+        workspaceId,
         name: name || `Group-${Date.now()}`,
         description: description || "Interactive team discussion room.",
         isPrivate: !!isPrivate,
@@ -171,18 +223,19 @@ export const chatsController = {
         isGroup: !!isGroup,
         memberIds: resolvedMembers,
         logoUrl: logoUrl || "",
-        adminIds: [req.userId], // Creator is the initial admin
+        adminIds: [req.userId],
         createdAt: new Date().toISOString()
       };
 
       const result = await dbService.insertItem('channels', newChannel);
+      await logActivity(req.userId, workspaceId, 'CHANNEL_CREATED', { channelId: result.id, name: result.name });
+      broadcastChannelUpdate(result);
       res.status(201).json(result);
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   },
 
-  // Update channel settings (changing group logo, making member admin, adding people)
   updateChannelSettings: async (req, res) => {
     try {
       const { channelId } = req.params;
@@ -191,9 +244,20 @@ export const chatsController = {
       const channel = await dbService.getItemById('channels', channelId);
       if (!channel) return res.status(404).json({ error: "Channel/group not found." });
 
-      // Only administrators can manage group settings
+      const callerRole = req.user.role;
+      const workspaceId = req.user.workspaceId || 'w-1';
+
+      if (callerRole === 'EMPLOYEE') {
+        if (adminIds !== undefined || memberIds !== undefined) {
+          return res.status(403).json({ error: "Access denied: Employees cannot manage channel membership or admin roles." });
+        }
+        if (channel.adminIds && !channel.adminIds.includes(req.userId)) {
+          return res.status(403).json({ error: "Access denied: Employees can only edit details of channels they created." });
+        }
+      }
+
       const userIsAdmin = Array.isArray(channel.adminIds) && channel.adminIds.includes(req.userId);
-      if (!userIsAdmin && channel.isGroup) {
+      if (!userIsAdmin && channel.isGroup && callerRole !== 'SUPER_ADMIN' && callerRole !== 'ADMIN') {
         return res.status(403).json({ error: "Only group administrators can modify group details." });
       }
 
@@ -204,7 +268,6 @@ export const chatsController = {
       if (adminIds !== undefined) updates.adminIds = adminIds;
       if (memberIds !== undefined) {
         updates.memberIds = memberIds;
-        // Ensure admin members are also part of channel members
         const currentAdmins = adminIds || channel.adminIds || [];
         currentAdmins.forEach(adminId => {
           if (!updates.memberIds.includes(adminId)) {
@@ -214,6 +277,11 @@ export const chatsController = {
       }
 
       const result = await dbService.updateItem('channels', channelId, updates);
+      if (!result) {
+        return res.status(500).json({ error: "Failed to update channel." });
+      }
+      await logActivity(req.userId, workspaceId, 'CHANNEL_UPDATED', { channelId, updates: Object.keys(updates) });
+      broadcastChannelUpdate(result);
       res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -224,14 +292,23 @@ export const chatsController = {
   getMessagesByChannel: async (req, res) => {
     try {
       const channelId = req.params.channelId;
+      const channel = await dbService.getItemById('channels', channelId);
+      if (!channel) return res.status(404).json({ error: "Channel not found." });
+
+      const memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
+      if (channel.isPrivate || channel.isDM) {
+        if (!memberIds.includes(req.userId)) {
+          return res.status(403).json({ error: "Access Denied. You are not a member of this channel." });
+        }
+      }
+
       // 4. Check Redis cache first
       const cached = await redisService.getCachedMessages(channelId);
       if (cached) {
         return res.json(cached);
       }
 
-      const messages = await dbService.getCollection('messages');
-      const filtered = messages.filter(m => m.channelId === channelId);
+      const filtered = await dbService.getCollection('messages', { channelId });
       
       // Save collection cache
       await redisService.saveMessagesCollectionCache(channelId, filtered);
@@ -242,13 +319,24 @@ export const chatsController = {
     }
   },
 
-  // Send message
   sendMessage: async (req, res) => {
     try {
-      const { content, parentId, taskId, attachments } = req.body;
+      const parseResult = sendMessageSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return res.status(400).json({ error: parseResult.error.errors[0].message });
+      }
+
+      const { content, parentId, taskId, attachments } = parseResult.data;
       const channelId = req.params.channelId;
-      if (!content && (!attachments || attachments.length === 0)) {
-        return res.status(400).json({ error: "Message content or attachments required." });
+
+      const channel = await dbService.getItemById('channels', channelId);
+      if (!channel) return res.status(404).json({ error: "Channel not found." });
+
+      const memberIds = Array.isArray(channel.memberIds) ? channel.memberIds : [];
+      if (channel.isPrivate || channel.isDM) {
+        if (!memberIds.includes(req.userId)) {
+          return res.status(403).json({ error: "Access Denied. You are not a member of this channel." });
+        }
       }
 
       const newMessage = {
@@ -265,26 +353,44 @@ export const chatsController = {
 
       const result = await dbService.insertItem('messages', newMessage);
 
-      // Cache the message
       await redisService.cacheMessage(channelId, result);
 
-      // Pub/Sub Broadcast
-      const channel = await dbService.getItemById('channels', channelId);
-      const isPublished = await redisService.publishMessage(channel, result);
+      let updatedChannel = channel;
+      if (channel) {
+        const unreadCount = channel.unreadCount || {};
+        const chMembers = Array.isArray(channel.memberIds) ? channel.memberIds : [];
+        chMembers.forEach(memberId => {
+          if (memberId !== req.userId) {
+            unreadCount[memberId] = (unreadCount[memberId] || 0) + 1;
+          }
+        });
+        
+        const updated = await dbService.updateItem('channels', channelId, {
+          lastMessageAt: newMessage.createdAt,
+          unreadCount
+        });
+        if (!updated) {
+          return res.status(500).json({ error: "Failed to update channel message metadata." });
+        }
+        updatedChannel = updated;
+        
+        broadcastChannelUpdate(updatedChannel);
+      }
 
-      // Fallback local emit if Redis is unavailable
+      const isPublished = await redisService.publishMessage(updatedChannel, result);
+
       if (!isPublished) {
         const io = getSocketIO();
         if (io) {
-          const roomName = redisService.resolvePubSubChannel(channel) || `channel:${channelId}`;
+          const roomName = redisService.resolvePubSubChannel(updatedChannel) || `channel:${channelId}`;
           io.to(roomName).emit('message:received', result);
         }
       }
 
-      // Mentions notify flow
       const mentionRegex = /@(\w+)/g;
       let match;
-      const users = await dbService.getCollection('users');
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const users = await dbService.getCollection('users', { workspaceId });
       
       while ((match = mentionRegex.exec(content)) !== null) {
         const mentionedPart = match[1].toLowerCase();
@@ -300,12 +406,35 @@ export const chatsController = {
             entityType: "MESSAGE",
             isRead: false,
             isSaved: false,
+            workspaceId,
             createdAt: new Date().toISOString()
           });
         }
       }
 
       res.status(201).json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  },
+
+  markChannelAsRead: async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channel = await dbService.getItemById('channels', channelId);
+      if (!channel) return res.status(404).json({ error: "Channel not found." });
+
+      const unreadCount = channel.unreadCount || {};
+      unreadCount[req.userId] = 0;
+
+      const updated = await dbService.updateItem('channels', channelId, { unreadCount });
+      if (!updated) {
+        return res.status(500).json({ error: "Failed to update channel read status. Please run 'npx prisma generate' and 'npx prisma db push' to sync your database schema." });
+      }
+      
+      broadcastChannelUpdate(updated);
+
+      res.json(updated);
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -367,14 +496,13 @@ export const chatsController = {
 
       const savedByIds = message.savedByIds || [];
       const currUser = req.userId;
-      let isSaved = false;
+      const workspaceId = req.user.workspaceId || 'w-1';
 
       if (savedByIds.includes(currUser)) {
         const idx = savedByIds.indexOf(currUser);
         savedByIds.splice(idx, 1);
       } else {
         savedByIds.push(currUser);
-        isSaved = true;
         
         await dbService.insertItem('notifications', {
           userId: currUser,
@@ -385,16 +513,15 @@ export const chatsController = {
           entityType: "MESSAGE",
           isRead: false,
           isSaved: true,
+          workspaceId,
           createdAt: new Date().toISOString()
         });
       }
 
       const updated = await dbService.updateItem('messages', messageId, { savedByIds });
 
-      // Invalidate messages cache
       await redisService.invalidateMessagesCache(message.channelId);
 
-      // Broadcast update
       const channel = await dbService.getItemById('channels', message.channelId);
       const roomName = redisService.resolvePubSubChannel(channel) || `channel:${message.channelId}`;
       const io = getSocketIO();
@@ -411,8 +538,9 @@ export const chatsController = {
   // Fetch sent/received chat invitations
   getChatRequests: async (req, res) => {
     try {
-      const requests = await dbService.getCollection('chatRequests');
-      const users = await dbService.getCollection('users');
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const requests = await dbService.getCollection('chatRequests', { workspaceId });
+      const users = await dbService.getCollection('users', { workspaceId });
       const currentUser = users.find(u => u.id === req.userId);
       const userEmail = currentUser?.email?.toLowerCase() || '';
 
@@ -427,21 +555,20 @@ export const chatsController = {
     }
   },
 
-  // Submit new 1-on-1 invitation request via mail
   createChatRequest: async (req, res) => {
     try {
       const { email, name } = req.body;
       if (!email || !name) return res.status(400).json({ error: "Email address and recipient name are required." });
 
-      const users = await dbService.getCollection('users');
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const users = await dbService.getCollection('users', { workspaceId });
       const currentUser = users.find(u => u.id === req.userId);
 
       if (currentUser?.email?.toLowerCase() === email.toLowerCase()) {
         return res.status(400).json({ error: "You cannot send a chat invitation to your own email address." });
       }
 
-      // See if request matches existing pendiente
-      const requests = await dbService.getCollection('chatRequests');
+      const requests = await dbService.getCollection('chatRequests', { workspaceId });
       const alreadyPending = requests.find(r => 
         r.senderId === req.userId && 
         r.receiverEmail.toLowerCase() === email.toLowerCase() &&
@@ -451,7 +578,6 @@ export const chatsController = {
         return res.status(400).json({ error: "You already have an active pending invitation sent to this user." });
       }
 
-      // Register receiver in system if they don't already exist so they can login and accept it
       let targetUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
       if (!targetUser) {
         const initials = name.substring(0,1).toUpperCase() || 'U';
@@ -467,7 +593,8 @@ export const chatsController = {
           avatarUrl: initials,
           color: randomColor,
           timezone: "GMT",
-          role: "MEMBER"
+          role: "EMPLOYEE",
+          workspaceId
         });
       }
 
@@ -476,12 +603,12 @@ export const chatsController = {
         receiverEmail: email,
         receiverName: name,
         status: "PENDING",
+        workspaceId,
         createdAt: new Date().toISOString()
       };
 
       const result = await dbService.insertItem('chatRequests', newRequest);
 
-      // Post notification to receiver
       await dbService.insertItem('notifications', {
         userId: targetUser.id,
         type: "MENTIONS",
@@ -491,14 +618,13 @@ export const chatsController = {
         entityType: "MESSAGE",
         isRead: false,
         isSaved: false,
+        workspaceId,
         createdAt: new Date().toISOString()
       });
 
-      // Construct simulation / signup link and send out email via Nodemailer
       const requestHost = req.headers.origin || process.env.APP_URL || 'http://localhost:3000';
       const signupUrl = `${requestHost}/?inviteEmail=${encodeURIComponent(email)}&inviteName=${encodeURIComponent(name)}`;
       
-      // Dispatch email (uses Ethereal fallback dynamically when SMTP is not configured)
       const emailResult = await sendEmailInvitation(currentUser?.name || "Colleague", email, name, signupUrl);
       
       let finalResult = result;
@@ -510,6 +636,8 @@ export const chatsController = {
       if (io) {
         io.to(`user:${targetUser.id}`).emit('invite:received', finalResult);
       }
+
+      await logActivity(req.userId, workspaceId, 'CHAT_REQUEST_CREATED', { receiverEmail: email, receiverName: name });
 
       res.status(201).json({
         success: true,
@@ -533,8 +661,8 @@ export const chatsController = {
         return res.status(400).json({ error: `Invite cannot be accepted. Status is already ${requestItem.status}.` });
       }
 
-      // Verify that active user is indeed the targeted recipient
-      const users = await dbService.getCollection('users');
+      const workspaceId = req.user.workspaceId || 'w-1';
+      const users = await dbService.getCollection('users', { workspaceId });
       const senderUser = users.find(u => u.id === requestItem.senderId);
       const activeUser = users.find(u => u.id === req.userId);
 
@@ -542,13 +670,11 @@ export const chatsController = {
         return res.status(403).json({ error: "Access Denied. This invitation was sent to a different email address." });
       }
 
-      // Update status
       await dbService.updateItem('chatRequests', requestId, { status: 'ACCEPTED' });
 
-      // Create a private, dedicated 1-on-1 DM channel
       const dmName = `DM with ${senderUser?.name || "Colleague"}`;
       const dmChannel = {
-        workspaceId: "w-1",
+        workspaceId,
         name: dmName,
         description: `Instant DM between ${senderUser?.name} and ${activeUser?.name}`,
         isPrivate: true,
@@ -562,7 +688,6 @@ export const chatsController = {
 
       const channelObj = await dbService.insertItem('channels', dmChannel);
 
-      // Create a welcome notification for sender
       await dbService.insertItem('notifications', {
         userId: requestItem.senderId,
         type: "MENTIONS",
@@ -572,6 +697,7 @@ export const chatsController = {
         entityType: "MESSAGE",
         isRead: false,
         isSaved: false,
+        workspaceId,
         createdAt: new Date().toISOString()
       });
 
@@ -580,13 +706,14 @@ export const chatsController = {
         io.to(`user:${requestItem.senderId}`).emit('invite:accepted', channelObj);
       }
 
+      await logActivity(req.userId, workspaceId, 'CHAT_REQUEST_ACCEPTED', { senderId: requestItem.senderId, channelId: channelObj.id });
+
       res.json({ success: true, channel: channelObj });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   },
 
-  // Decline 1-on-1 Chat Request
   declineChatRequest: async (req, res) => {
     try {
       const { requestId } = req.params;
@@ -599,7 +726,40 @@ export const chatsController = {
       }
 
       const updated = await dbService.updateItem('chatRequests', requestId, { status: 'DECLINED' });
+      await logActivity(req.userId, req.user.workspaceId || 'w-1', 'CHAT_REQUEST_DECLINED', { senderId: requestItem.senderId });
       res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  },
+
+  deleteChannel: async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channel = await dbService.getItemById('channels', channelId);
+      if (!channel) return res.status(404).json({ error: "Channel/group not found." });
+
+      const workspaceId = req.user.workspaceId || 'w-1';
+      if (channel.workspaceId !== workspaceId) {
+        return res.status(403).json({ error: "Access denied: Channel belongs to a different workspace." });
+      }
+
+      if (req.user.role === 'EMPLOYEE') {
+        return res.status(403).json({ error: "Access denied: Employees cannot delete channels." });
+      }
+
+      await dbService.updateItem('channels', channelId, {
+        deletedAt: new Date(),
+        deletedById: req.userId
+      });
+
+      const io = getSocketIO();
+      if (io) {
+        io.to(`workspace:${workspaceId}`).emit("channel:deleted", channelId);
+      }
+
+      await logActivity(req.userId, workspaceId, 'CHANNEL_DELETED', { channelId, name: channel.name });
+      res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

@@ -18,13 +18,18 @@ const redisOptions = {
 let redisClient = null;
 let pubClient = null;
 let subClient = null;
-let redisConnected = false;
+let redisClientReady = false;
+let pubClientReady = false;
+let subClientReady = false;
 
 // Track connection error logs to avoid spamming process stdout/stderr
 const loggedErrors = new Set();
 
 export function isRedisAvailable() {
-  return redisConnected && redisClient && redisClient.status === 'ready';
+  return redisClientReady && pubClientReady && subClientReady &&
+         redisClient && redisClient.status === 'ready' &&
+         pubClient && pubClient.status === 'ready' &&
+         subClient && subClient.status === 'ready';
 }
 
 export function initRedis() {
@@ -37,18 +42,22 @@ export function initRedis() {
     pubClient = new Redis(redisOptions);
     subClient = new Redis(redisOptions);
 
-    const handleError = (label) => (err) => {
+    const handleError = (label, setter) => (err) => {
+      setter(false);
       const errKey = `${label}:${err.code || err.message}`;
       if (!loggedErrors.has(errKey)) {
         console.warn(`[Redis] ${label} connection issue (silent in-memory fallback active):`, err.message);
         loggedErrors.add(errKey);
       }
-      redisConnected = false;
     };
 
-    redisClient.on('error', handleError('Client'));
-    pubClient.on('error', handleError('PubClient'));
-    subClient.on('error', handleError('SubClient'));
+    redisClient.on('error', handleError('Client', (val) => { redisClientReady = val; }));
+    pubClient.on('error', handleError('PubClient', (val) => { pubClientReady = val; }));
+    subClient.on('error', handleError('SubClient', (val) => { subClientReady = val; }));
+
+    redisClient.on('close', () => { redisClientReady = false; });
+    pubClient.on('close', () => { pubClientReady = false; });
+    subClient.on('close', () => { subClientReady = false; });
 
     redisClient.on('connect', () => {
       // Don't issue multiple connect prints if already acknowledged
@@ -59,16 +68,25 @@ export function initRedis() {
       }
     });
 
-    redisClient.on('ready', () => {
-      redisConnected = true;
-      console.log('[Redis] Connection established. Core client is ready.');
-      loggedErrors.clear(); // Reset warning caches for graceful reconnect logging
-    });
+    const handleReady = (label, setter) => () => {
+      setter(true);
+      console.log(`[Redis] Connection established. ${label} is ready.`);
+      if (redisClientReady && pubClientReady && subClientReady) {
+        console.log('[Redis] All clients (Core, Pub, Sub) are ready.');
+        loggedErrors.clear(); // Reset warning caches for graceful reconnect logging
+      }
+    };
+
+    redisClient.on('ready', handleReady('Client', (val) => { redisClientReady = val; }));
+    pubClient.on('ready', handleReady('PubClient', (val) => { pubClientReady = val; }));
+    subClient.on('ready', handleReady('SubClient', (val) => { subClientReady = val; }));
 
     return { redisClient, pubClient, subClient };
   } catch (error) {
     console.error('[Redis] Early initialization failure:', error.message);
-    redisConnected = false;
+    redisClientReady = false;
+    pubClientReady = false;
+    subClientReady = false;
     return { redisClient: null, pubClient: null, subClient: null };
   }
 }

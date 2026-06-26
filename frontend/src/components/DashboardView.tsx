@@ -223,7 +223,7 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* Admin Quick Assignment Center */}
-      {(activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER') && (
+      {(activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER' || activeUser?.role === 'SUPER_ADMIN') && (
         <div className="mb-8 grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
 
           {/* Card 1: New Task Placement & Automation */}
@@ -503,7 +503,7 @@ export const DashboardView: React.FC = () => {
         </div>
 
         <div className="space-y-6">
-          {(activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER') && (
+          {(activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER' || activeUser?.role === 'SUPER_ADMIN') && (
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs">
               <h3 className="text-sm font-bold text-slate-900 uppercase tracking-widest border-b border-slate-100 pb-3 mb-4">
                 Team Member Workloads
@@ -526,7 +526,9 @@ export const DashboardView: React.FC = () => {
                           {user.name.charAt(0).toUpperCase()}
                         </div>
                         <div className="truncate flex-1">
-                          <span className="text-xs font-semibold text-slate-800 block truncate">{user.name}</span>
+                          <span className="text-xs font-semibold text-slate-800 block truncate">
+                            {user.name}{user.id === activeUser?.id ? ' (You)' : ''}
+                          </span>
                           {/* Custom workload bar */}
                           <div className="w-full bg-slate-100 rounded-full h-1.5 mt-1 overflow-hidden">
                             <div
@@ -540,6 +542,68 @@ export const DashboardView: React.FC = () => {
                         <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2 py-0.5 rounded-full block border border-slate-200">
                           {count} tasks
                         </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Teammate Task Progress Tracking Summary */}
+          {(activeUser?.role === 'ADMIN' || activeUser?.role === 'OWNER' || activeUser?.role === 'SUPER_ADMIN') && (
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs">
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-widest border-b border-slate-100 pb-3 mb-4">
+                Teammate Task Progress
+              </h3>
+              <p className="text-slate-500 text-xs mb-5 font-semibold">
+                Monitor progression percentages of tasks delegated to your teammates.
+              </p>
+              <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+                {users.filter(u => u.id !== activeUser?.id).map(u => {
+                  const uTasks = tasks.filter(t => t.assigneeId === u.id);
+                  return (
+                    <div key={u.id} className="border border-slate-100 rounded-xl p-3 bg-slate-50/50">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-6 h-6 rounded-full ${u.color} text-[10px] font-black text-white flex items-center justify-center`}>
+                          {u.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-xs font-bold text-slate-800">
+                          {u.name}{u.id === activeUser?.id ? ' (You)' : ''}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-semibold">({uTasks.length} task{uTasks.length !== 1 ? 's' : ''})</span>
+                      </div>
+                      
+                      <div className="space-y-2.5 mt-2">
+                        {uTasks.map(t => {
+                          const statusMap: Record<string, number> = {
+                            'TODO': 25,
+                            'IN_PROGRESS': 50,
+                            'IN_REVIEW': 75,
+                            'DONE': 100
+                          };
+                          const prog = statusMap[t.status] || 25;
+                          
+                          let barColor = 'bg-slate-400';
+                          if (t.status === 'IN_PROGRESS') barColor = 'bg-indigo-650';
+                          if (t.status === 'IN_REVIEW') barColor = 'bg-amber-500';
+                          if (t.status === 'DONE') barColor = 'bg-emerald-500';
+                          
+                          return (
+                            <div key={t.id} className="text-[11px] bg-white border border-slate-200/60 rounded-lg p-2.5 flex flex-col gap-1.5 shadow-xxs">
+                              <div className="flex justify-between font-bold text-slate-700">
+                                <span className="truncate max-w-[75%]">{t.name}</span>
+                                <span className="shrink-0">{prog}%</span>
+                              </div>
+                              <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                <div className={`h-full ${barColor} rounded-full`} style={{ width: `${prog}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {uTasks.length === 0 && (
+                          <span className="text-[11px] text-slate-400 italic font-semibold">No tasks assigned to this teammate.</span>
+                        )}
                       </div>
                     </div>
                   );

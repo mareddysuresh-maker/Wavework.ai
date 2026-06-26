@@ -4,6 +4,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
@@ -24,6 +25,10 @@ function getDelegate(collectionName) {
     case 'chatRequests': return prisma.chatRequest;
     case 'pomodoroSettings': return prisma.pomodoroSettings;
     case 'pomodoroSessions': return prisma.pomodoroSession;
+    case 'workspaces': return prisma.workspace;
+    case 'invitations': return prisma.invitation;
+    case 'activityLogs': return prisma.activityLog;
+    case 'workspaceMemberships': return prisma.workspaceMembership;
     default:
       throw new Error(`Prisma delegate for '${collectionName}' not resolved`);
   }
@@ -32,6 +37,25 @@ function getDelegate(collectionName) {
 function mapFromPrisma(collectionName, item) {
   if (!item) return null;
   const mapped = { ...item };
+  
+  if (collectionName === 'users') {
+    if (mapped.name) {
+      mapped.name = mapped.name
+        .replace(' (You)', '')
+        .replace(' (Lead UI/UX)', '')
+        .replace(' (Product Manager)', '')
+        .replace(' (QA Lead)', '');
+    }
+    if (typeof mapped.fileMetadata === 'string') {
+      try { mapped.fileMetadata = JSON.parse(mapped.fileMetadata); } catch (_) { mapped.fileMetadata = []; }
+    }
+  }
+  
+  if (collectionName === 'spaces') {
+    if (typeof mapped.memberIds === 'string') {
+      try { mapped.memberIds = JSON.parse(mapped.memberIds); } catch (_) { mapped.memberIds = []; }
+    }
+  }
   
   if (collectionName === 'lists') {
     if (typeof mapped.customFields === 'string') {
@@ -55,6 +79,9 @@ function mapFromPrisma(collectionName, item) {
     }
     if (typeof mapped.adminIds === 'string') {
       try { mapped.adminIds = JSON.parse(mapped.adminIds); } catch (_) { mapped.adminIds = []; }
+    }
+    if (typeof mapped.unreadCount === 'string') {
+      try { mapped.unreadCount = JSON.parse(mapped.unreadCount); } catch (_) { mapped.unreadCount = {}; }
     }
   }
   if (collectionName === 'messages') {
@@ -102,12 +129,22 @@ function mapToPrisma(collectionName, item) {
     }
     
     // Coerce potential nulls or undefined values to non-nullable Prisma Schema expectations
-    const stringFields = ['parentTaskId', 'description', 'status', 'priority', 'assigneeId', 'startDate', 'dueDate', 'createdById'];
+    const stringFields = ['parentTaskId', 'description', 'status', 'priority', 'assigneeId', 'startDate', 'dueDate', 'createdById', 'taskSource', 'assignedById', 'deleteRequestStatus', 'deleteRequestReason'];
     stringFields.forEach(field => {
       if (mapped[field] === null || (field in mapped && mapped[field] === undefined)) {
         mapped[field] = "";
       }
     });
+  }
+  if (collectionName === 'users') {
+    if (mapped.fileMetadata !== undefined && typeof mapped.fileMetadata !== 'string') {
+      mapped.fileMetadata = JSON.stringify(mapped.fileMetadata);
+    }
+  }
+  if (collectionName === 'spaces') {
+    if (mapped.memberIds !== undefined && typeof mapped.memberIds !== 'string') {
+      mapped.memberIds = JSON.stringify(mapped.memberIds);
+    }
   }
   if (collectionName === 'channels') {
     if (mapped.memberIds !== undefined && typeof mapped.memberIds !== 'string') {
@@ -115,6 +152,9 @@ function mapToPrisma(collectionName, item) {
     }
     if (mapped.adminIds !== undefined && typeof mapped.adminIds !== 'string') {
       mapped.adminIds = JSON.stringify(mapped.adminIds);
+    }
+    if (mapped.unreadCount !== undefined && typeof mapped.unreadCount !== 'string') {
+      mapped.unreadCount = JSON.stringify(mapped.unreadCount);
     }
   }
   if (collectionName === 'messages') {
@@ -147,10 +187,10 @@ let activeUserId = "u-1";
 // Seeding standard initial system state on start to bypass empty view modes
 const DEFAULT_STATE = {
   users: [
-    { id: "u-1", name: "Karthik (You)", email: "mareddykarthikeya@gmail.com", avatarUrl: "K", color: "bg-indigo-600 text-white", timezone: "UTC", role: "OWNER" },
-    { id: "u-2", name: "Sarah (Lead UI/UX)", email: "sarah.designer@flowup.io", avatarUrl: "S", color: "bg-pink-500 text-white", timezone: "EST", role: "ADMIN" },
-    { id: "u-3", name: "John (Product Manager)", email: "john.pm@flowup.io", avatarUrl: "J", color: "bg-amber-500 text-white", timezone: "PST", role: "ADMIN" },
-    { id: "u-4", name: "Emma (QA Lead)", email: "emma.qa@flowup.io", avatarUrl: "E", color: "bg-emerald-500 text-white", timezone: "GMT", role: "MEMBER" }
+    { id: "u-1", name: "Karthik", email: "mareddykarthikeya@gmail.com", avatarUrl: "K", color: "bg-indigo-600 text-white", timezone: "UTC", role: "SUPER_ADMIN", workspaceId: "w-1" },
+    { id: "u-2", name: "Sarah", email: "sarah.designer@flowup.io", avatarUrl: "S", color: "bg-pink-500 text-white", timezone: "EST", role: "ADMIN", workspaceId: "w-1" },
+    { id: "u-3", name: "John", email: "john.pm@flowup.io", avatarUrl: "J", color: "bg-amber-500 text-white", timezone: "PST", role: "ADMIN", workspaceId: "w-1" },
+    { id: "u-4", name: "Emma", email: "emma.qa@flowup.io", avatarUrl: "E", color: "bg-emerald-500 text-white", timezone: "GMT", role: "EMPLOYEE", workspaceId: "w-1" }
   ],
   spaces: [
     { id: "s-1", workspaceId: "w-1", name: "Core Engineering", color: "#6366f1", icon: "Cpu", isPrivate: false },
@@ -274,6 +314,24 @@ const DEFAULT_STATE = {
   ]
 };
 
+async function hashExistingPlaintextPasswords() {
+  try {
+    const users = await prisma.user.findMany();
+    for (const u of users) {
+      if (!u.password.startsWith('$2a$') && !u.password.startsWith('$2b$')) {
+        const hashedPassword = bcrypt.hashSync(u.password, 10);
+        await prisma.user.update({
+          where: { id: u.id },
+          data: { password: hashedPassword }
+        });
+        console.log(`[DB SETUP] Hashed plaintext password for user: ${u.email}`);
+      }
+    }
+  } catch (err) {
+    console.error("[DB SETUP] Failed to update plain text passwords:", err);
+  }
+}
+
 async function seedDatabaseIfEmpty() {
   try {
     const userCount = await prisma.user.count();
@@ -281,8 +339,14 @@ async function seedDatabaseIfEmpty() {
       console.log("🌱 Database is empty! Auto-seeding initial beautiful ClickUp clone dataset...");
       
       // Seed users
+      const defaultPasswordHash = bcrypt.hashSync("password123", 10);
       for (const u of DEFAULT_STATE.users) {
-        await prisma.user.create({ data: u });
+        await prisma.user.create({
+          data: {
+            ...u,
+            password: defaultPasswordHash
+          }
+        });
       }
       
       // Seed spaces
@@ -447,20 +511,199 @@ async function seedDatabaseIfEmpty() {
       });
       
       console.log("🌻 Database preloaded and online!");
+      await migrateRolesAndWorkspaces();
+    } else {
+      await hashExistingPlaintextPasswords();
+      await migrateRolesAndWorkspaces();
     }
   } catch (error) {
     console.error("❌ Seeding database failed:", error);
   }
 }
 
+export async function migrateRolesAndWorkspaces() {
+  try {
+    // 1. Ensure workspace w-1 exists
+    const existingWorkspace = await prisma.workspace.findUnique({ where: { id: 'w-1' } });
+    if (!existingWorkspace) {
+      await prisma.workspace.create({
+        data: {
+          id: 'w-1',
+          name: 'WaveWork Workspace',
+          description: 'Central company workspace for WaveWork.ai',
+          ownerId: 'u-1',
+          createdAt: new Date().toISOString()
+        }
+      });
+      console.log("[DB SETUP] Created default workspace w-1");
+    }
+
+    // 2. Migrate users and create memberships
+    const users = await prisma.user.findMany();
+    for (const u of users) {
+      let updatedRole = u.role;
+      if (u.role === 'OWNER') {
+        updatedRole = 'SUPER_ADMIN';
+      } else if (u.role === 'MEMBER') {
+        updatedRole = 'EMPLOYEE';
+      }
+      
+      const targetWorkspace = u.workspaceId || 'w-1';
+      const activeWorkspace = u.activeWorkspaceId || targetWorkspace;
+
+      await prisma.user.update({
+        where: { id: u.id },
+        data: { 
+          role: updatedRole,
+          workspaceId: targetWorkspace,
+          activeWorkspaceId: activeWorkspace
+        }
+      });
+
+      // Create membership record
+      const membershipId = `wm-${u.id}-${targetWorkspace}`;
+      const existingMembership = await prisma.workspaceMembership.findUnique({
+        where: { id: membershipId }
+      });
+      if (!existingMembership) {
+        await prisma.workspaceMembership.create({
+          data: {
+            id: membershipId,
+            userId: u.id,
+            workspaceId: targetWorkspace,
+            role: updatedRole
+          }
+        });
+        console.log(`[DB SETUP] Created workspace membership for ${u.email} in ${targetWorkspace} with role ${updatedRole}`);
+      }
+    }
+    console.log("[DB SETUP] Rolled out user role and workspace alignment successfully.");
+  } catch (err) {
+    console.error("[DB SETUP] Role and workspace migration failed:", err);
+  }
+}
+
+export async function bootstrapWorkspace(workspaceId, ownerId) {
+  try {
+    console.log(`[BOOTSTRAP] Programmatically bootstrapping default workspace ${workspaceId} for owner ${ownerId}...`);
+    
+    // 1. Create Workspace
+    await prisma.workspace.create({
+      data: {
+        id: workspaceId,
+        name: "My New Workspace",
+        ownerId: ownerId,
+        createdAt: new Date().toISOString()
+      }
+    });
+
+    // 2. Create default Space: General
+    const spaceId = `s-gen-${Date.now()}`;
+    await prisma.space.create({
+      data: {
+        id: spaceId,
+        workspaceId: workspaceId,
+        name: "General",
+        color: "#6366f1",
+        icon: "Cpu",
+        isPrivate: false,
+        memberIds: JSON.stringify([ownerId])
+      }
+    });
+
+    // 3. Create default List: Getting Started
+    const listId = `l-start-${Date.now()}`;
+    await prisma.list.create({
+      data: {
+        id: listId,
+        spaceId: spaceId,
+        folderId: "",
+        name: "Getting Started",
+        createdAt: new Date().toISOString(),
+        customFields: "[]"
+      }
+    });
+
+    // 4. Create default Channel: #general
+    const channelId = `ch-gen-${Date.now()}`;
+    await prisma.channel.create({
+      data: {
+        id: channelId,
+        workspaceId: workspaceId,
+        name: "general",
+        description: "Workspace-wide announcements and team general chat.",
+        isPrivate: false,
+        isDM: false,
+        memberIds: JSON.stringify([ownerId]),
+        createdAt: new Date().toISOString()
+      }
+    });
+
+    console.log(`[BOOTSTRAP] Workspace ${workspaceId} bootstrapped successfully.`);
+    return { spaceId, listId, channelId };
+  } catch (err) {
+    console.error("[BOOTSTRAP] Workspace bootstrap failed:", err);
+    throw err;
+  }
+}
+
 // Push seeding asynchronously
 seedDatabaseIfEmpty();
 
+async function seedClientDemoUser() {
+  try {
+    const { PrismaClient } = await import('@prisma/client');
+    const prismaClient = new PrismaClient();
+    const bcryptModule = await import('bcryptjs');
+    const bcrypt = bcryptModule.default || bcryptModule;
+    const hash = bcrypt.hashSync('password123', 10);
+    const existing = await prismaClient.user.findUnique({ where: { email: 'client@flowup.io' } });
+    if (!existing) {
+      await prismaClient.user.create({
+        data: {
+          id: 'u-client',
+          name: 'Client Demo',
+          email: 'client@flowup.io',
+          password: hash,
+          avatarUrl: 'C',
+          color: 'bg-emerald-500 text-white',
+          role: 'SUPER_ADMIN',
+          workspaceId: 'w-1',
+          activeWorkspaceId: 'w-1'
+        }
+      });
+      await prismaClient.workspaceMembership.create({
+        data: {
+          id: 'wm-u-client-w-1',
+          userId: 'u-client',
+          workspaceId: 'w-1',
+          role: 'SUPER_ADMIN',
+          createdAt: new Date()
+        }
+      });
+      console.log("[BOOTSTRAP] Client demo user injected successfully.");
+    }
+  } catch (err) {
+    console.error("[BOOTSTRAP] Client demo injection failed:", err);
+  }
+}
+seedClientDemoUser();
+
 export const dbService = {
-  getCollection: async (name) => {
+  getCollection: async (name, filter = {}) => {
     try {
       const delegate = getDelegate(name);
-      const items = await delegate.findMany();
+      const softDeleteModels = ['spaces', 'lists', 'tasks', 'channels', 'workspaces'];
+      
+      let finalFilter = { ...filter };
+      if (softDeleteModels.includes(name)) {
+        finalFilter = {
+          deletedAt: null,
+          ...finalFilter
+        };
+      }
+      
+      const items = await delegate.findMany({ where: finalFilter });
       return items.map(item => mapFromPrisma(name, item));
     } catch (err) {
       console.error(`Prisma fetch for ${name} failed`, err);
@@ -472,6 +715,9 @@ export const dbService = {
     try {
       const delegate = getDelegate(name);
       const item = await delegate.findUnique({ where: { id } });
+      if (item && ['spaces', 'lists', 'tasks', 'channels', 'workspaces'].includes(name) && item.deletedAt !== null) {
+        return null;
+      }
       return mapFromPrisma(name, item);
     } catch (err) {
       console.error(`Prisma find by id for ${name} failed`, err);

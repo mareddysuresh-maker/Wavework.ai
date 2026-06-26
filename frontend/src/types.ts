@@ -65,6 +65,11 @@ export interface Task {
   customFields?: Record<string, any>;
   checklist?: TaskChecklistItem[];
   createdById: string;
+  isPersonal?: boolean;
+  taskSource?: string;
+  assignedById?: string;
+  deleteRequestStatus?: string;
+  deleteRequestReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -89,6 +94,8 @@ export interface Channel {
   memberIds: string[];
   adminIds?: string[];
   logoUrl?: string;
+  unreadCount?: Record<string, number>;
+  lastMessageAt?: string;
   createdAt: string;
 }
 

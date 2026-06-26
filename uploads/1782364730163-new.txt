@@ -1,0 +1,3446 @@
+# WAVEWORK — FULL-STACK BUILD SPECIFICATION
+## A Production-Grade ClickUp-Style Project Management Platform
+### Master Prompt for AI-Assisted Code Generation (Google AI Studio)
+
+---
+
+## 0. HOW TO READ THIS DOCUMENT
+
+This is a single, self-contained build specification for a brand-new,
+production-grade, full-stack web application called **WaveWork**.
+
+WaveWork is a ClickUp-style workspace, project, and task management
+platform with built-in real-time chat (channels + direct messages),
+file storage, notifications, and workspace administration.
+
+This document contains, in order:
+
+1. Product vision and what "ClickUp-style" means for this build.
+2. Mandatory technology stack (non-negotiable), followed immediately
+   by the locked UI Design System (2A) — the visual rules every
+   screen in every phase must follow.
+3. Mandatory monorepo and folder structure (non-negotiable).
+4. Scalability, performance, and "free-tier-friendly" infrastructure
+   requirements.
+5. The full, authoritative **Role & Workspace Hierarchy Architecture
+   Specification** — every business rule, permission, data model, and
+   workflow the application must implement, verbatim (Section 5),
+   followed by the screen-by-screen user journey (5A), the ClickUp
+   feature-parity checklist (5B), the concrete Spaces/Chat/Socket data
+   model and event contract (5C), and the exact per-file backend
+   content specification (5D).
+6. Cross-cutting engineering standards (security, error handling,
+   real-time events, observability).
+7. A **phased build plan** — ten self-contained phase packets, each
+   with its own scope and acceptance checklist, meant to be handed to
+   the coding agent one at a time rather than all at once.
+8. Definition of done / acceptance checklist (the full version; each
+   phase in Section 7 also carries its own smaller version).
+
+**This is a greenfield build.** There is no existing codebase to
+preserve. Generate the entire application — frontend, backend, and
+database schema — from scratch, following this specification exactly.
+
+Do not skip, summarize, or shortcut any rule in Sections 5 through 5D.
+These sections are the single source of truth for every permission
+check, data model, file responsibility, and workflow in the product.
+Everywhere else in this document (stack, folders, scaling) describes
+*how* to build it; Sections 5–5D describe *what* to build, in
+increasing levels of concrete detail — 5 is the business rules, 5A is
+the screens, 5B is feature parity, 5C is the Spaces/Chat data model and
+socket contract, and 5D is the literal content of every backend file.
+
+---
+
+## 1. PRODUCT VISION
+
+WaveWork is a workspace-centric project management and team
+collaboration platform, modeled closely on **ClickUp's** core
+information architecture:
+
+```
+Workspace
+  → Spaces
+      → Lists
+          → Tasks
+              → Subtasks, Comments, Attachments
+  → Channels (group chat)
+  → Direct Messages (1:1 chat)
+  → Member Directory
+  → Activity Logs
+  → Workspace Settings
+```
+
+Like ClickUp, **Spaces are the primary organizing unit** beneath the
+Workspace — they represent departments, teams, or initiatives
+(e.g. "Development", "Design", "Marketing"), each containing Lists,
+which contain Tasks. Every workspace member can see every Space (shared
+visibility), while the ability to *manage* structure (create/edit/
+delete Spaces and Lists) is restricted by role.
+
+WaveWork is **not multi-tenant in this version** — each deployment
+instance operates as a single isolated Workspace per the architecture
+spec below — but the data model must be built so that multi-workspace
+support can be layered on later without restructuring (every entity is
+already workspace-scoped).
+
+On top of the ClickUp-style project hierarchy, WaveWork adds:
+
+- A unified, role-based **sidebar** that adapts per user role.
+- Real-time **channels and direct messages**, similar to Slack, fully
+  integrated with task mentions and notifications.
+- A private **Personal Space** per user (personal tasks, scratchpad,
+  whiteboard) that no one else — including admins — can see.
+- A personal **File Hub** that aggregates files received via task
+  assignments without duplicating storage.
+- A centralized **Activity Log** for full auditability.
+- A **3-role permission system** (Super Admin, Admin, Employee) with
+  strict backend enforcement, detailed fully in Section 5.
+
+---
+
+## 2. MANDATORY TECHNOLOGY STACK
+
+Do not substitute any of the following. Use the **MERN stack
+philosophy** with TypeScript on the frontend only:
+
+| Layer | Technology | Notes |
+|---|---|---|
+| Frontend | **React** (with **TypeScript**) | Functional components, hooks only. No class components. |
+| Frontend build tool | **Vite** | Fast dev server, HMR, optimized production builds. |
+| Frontend styling | **Tailwind CSS** | Utility-first; no inline styles, no CSS-in-JS libraries. |
+| Frontend animation | **Framer Motion** | For transitions, drag-and-drop visual feedback, modals. |
+| Frontend state | **React Context + hooks**, or **Zustand** for global state | Avoid Redux unless complexity demands it. |
+| Frontend data fetching | **TanStack Query (React Query)** | Caching, retries, optimistic updates. |
+| Backend runtime | **Node.js** | LTS version. |
+| Backend language | **JavaScript** (plain Node.js, **not** TypeScript) | Per requirement: backend stays JavaScript. |
+| Backend framework | **Express.js** | REST API layer. |
+| Database | **PostgreSQL** | Relational integrity for workspace/role/task relationships. |
+| ORM | **Prisma** | Schema-first, migrations, type-safe queries. |
+| Real-time | **Socket.io** | Chat, notifications, live task updates. |
+| Real-time scaling | **Redis** (via `socket.io-redis-adapter` / pub-sub) | Used specifically for the **chat system** — horizontal Socket.io scaling and presence/online-status tracking across multiple server instances. |
+| File storage | **MinIO** (S3-compatible object storage) | Self-hosted, free, S3 API-compatible — used for all file/attachment/PDF/document uploads. |
+| Authentication | **JWT** (access + refresh token pattern) | Stored in httpOnly cookies. |
+| Password hashing | **bcrypt** | Never store plaintext passwords. |
+| Email | **Nodemailer** with a free SMTP provider (e.g. Gmail SMTP or a free-tier transactional email API) | Used for invitations and notifications. |
+| Validation | **Zod** (shared-shape validation; duplicated in JS on backend, TS on frontend) | Validate every request body server-side regardless of frontend validation. |
+| API documentation | **OpenAPI/Swagger** (`swagger-jsdoc` + `swagger-ui-express`) | Auto-generated from route annotations. |
+| Testing | **Vitest** (frontend) + **Jest + Supertest** (backend) | Unit + integration coverage on permission logic above all else. |
+| Containerization | **Docker + Docker Compose** | One container per service: frontend, backend, postgres, redis, minio. |
+| Process management (prod) | **PM2** (or Node cluster module) | Multi-core utilization on a single host. |
+
+**"High-end tech, free tools only" constraint:** every piece of
+infrastructure above (PostgreSQL, Redis, MinIO, Socket.io, Prisma,
+Nodemailer with free SMTP) has a genuinely free, self-hostable option
+with no proprietary vendor lock-in. Do not introduce paid SaaS
+dependencies (no Auth0, no paid Pusher/Ably channels, no paid S3 —
+MinIO replaces S3 entirely for free).
+
+---
+
+## 2A. UI DESIGN SYSTEM (LOCKED — APPLY EVERYWHERE, NO EXCEPTIONS)
+
+The product must look **sleek, clean, and calm** — closer to Linear or
+ClickUp's own modern UI than to a generic admin-template dashboard. No
+gradients-for-the-sake-of-it, no decorative illustrations, no
+over-animated transitions, no mismatched icon sets. Every screen in
+5A.5's sidebar-to-screen mapping must follow this system exactly so the
+whole app feels like one product, not a patchwork of AI-generated
+screens.
+
+### 2A.1 Visual tokens
+
+- **Typography:** one font family for the entire app — Inter (or the
+  system font stack as a fallback). Two weights only: 400 (body) and
+  600 (headings/emphasis). No more than 4 font sizes on any single
+  screen (e.g. 12px meta text, 14px body, 16px section titles, 20px
+  page titles).
+- **Color:** one neutral gray scale (backgrounds, borders, secondary
+  text) + exactly one accent color (buttons, active states, links,
+  the unread-badge dot) + 4 semantic colors (success/green,
+  warning/amber, danger/red, info/blue — used only for status pills
+  like task priority or activity-log event type, never decoratively).
+  Dark mode is not required for v1; build light mode only, correctly,
+  rather than both poorly.
+- **Spacing:** a single 4px-based spacing scale (4, 8, 12, 16, 24, 32,
+  48). No arbitrary one-off padding values anywhere in the codebase.
+- **Corners & elevation:** one border-radius value for cards/inputs/
+  buttons (e.g. 8px), one for pills/avatars (full round). One shadow
+  style for floating elements (modals, dropdowns) — flat, low-opacity,
+  no heavy drop shadows.
+- **Icons:** **one icon set only** — `lucide-react` — for every icon
+  in the app (sidebar items, buttons, status indicators, empty states).
+  Never mix icon libraries, never use emoji as functional icons. Each
+  sidebar item in 5A.5 gets exactly one consistent icon used nowhere
+  else for a different meaning (e.g. a checklist icon for "My Tasks"
+  everywhere it appears, not a different icon in the sidebar vs. the
+  page header).
+
+### 2A.2 Motion — restrained, not decorative
+
+Framer Motion is in the stack for **functional** motion only:
+
+- Page/panel transitions: simple fade + 4px slide, under 200ms.
+- Modal open/close: scale 0.98→1 + fade, under 150ms.
+- Drag-and-drop (kanban board, list reordering): smooth follow with no
+  bounce/spring overshoot.
+- Toasts/notifications: slide in from the same corner every time.
+
+No parallax, no scroll-jacking, no looping background animation, no
+animated gradients. If a transition doesn't help the user understand
+*what just changed*, it doesn't belong.
+
+### 2A.3 Component consistency rules
+
+- **One button component**, with exactly 3 visual variants (primary,
+  secondary, destructive) and 2 sizes — used for every button in the
+  app, including inside modals and forms. No screen invents its own
+  button style.
+- **One input/select/textarea style**, reused everywhere a form
+  appears (task creation, workspace settings, invitations, comments).
+- **One empty-state pattern**: icon + one line of text + one primary
+  action, reused for "no tasks yet," "no channels yet," "no
+  notifications," etc. — not a custom illustration per screen.
+- **One avatar component** (initials-fallback circle), used in the
+  sidebar, member directory, task assignee field, and chat — same
+  size scale everywhere a given context calls for it.
+- **One status-pill component** for task status, task priority, and
+  invitation status — same shape, same semantic colors from 2A.1,
+  different label text only.
+
+### 2A.4 Layout discipline
+
+- Sidebar width is fixed and identical across all three roles — only
+  the *items inside it* change per 5A.5, never its width, font size,
+  or icon style.
+- Every list/table screen (tasks, members, activity logs, files) uses
+  the same table component: same row height, same header style, same
+  pagination control at the bottom — never a bespoke table per module.
+- Every modal (Create Task, Create Channel, Invite Member, Create
+  Space) uses the same modal shell (header + body + footer with
+  Cancel/Confirm buttons in the same position) — only the body content
+  differs.
+
+### 2A.5 "No fancy things" — explicit exclusions
+
+Do not build, and remove if AI-generated by default: animated
+particle/gradient backgrounds, 3D tilt-on-hover cards, skeleton
+loaders with shimmer effects beyond a simple pulse, custom cursors,
+confetti/celebration animations, glassmorphism/frosted-blur panels,
+or any illustration library (unDraw, etc.) for empty states. The bar
+for every visual decision is: *does ClickUp or Linear actually do
+this in their real product UI?* If not, don't add it here either.
+
+---
+
+## 3. MANDATORY MONOREPO & FOLDER STRUCTURE
+
+Use a monorepo with **strict separation** between frontend and backend
+at the top level. Do not mix frontend and backend files in the same
+folder. Do not flatten the backend into a handful of files — split
+aggressively by responsibility, as shown below. You may add additional
+folders/files beyond this list if a clean separation of concerns
+calls for it, but do not omit anything listed.
+
+```
+wavework/
+│
+├── docker-compose.yml
+├── .env.example
+├── README.md
+│
+├── frontend/                          # React + TypeScript + Vite
+│   ├── public/
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── App.tsx
+│   │   ├── routes/                    # Route definitions, route guards
+│   │   ├── pages/                     # Top-level page components
+│   │   │   ├── auth/
+│   │   │   ├── dashboard/
+│   │   │   ├── spaces/
+│   │   │   ├── tasks/
+│   │   │   ├── chat/
+│   │   │   ├── personal-space/
+│   │   │   ├── file-hub/
+│   │   │   ├── settings/
+│   │   │   └── member-directory/
+│   │   ├── components/
+│   │   │   ├── sidebar/
+│   │   │   ├── tasks/
+│   │   │   ├── spaces/
+│   │   │   ├── chat/
+│   │   │   ├── notifications/
+│   │   │   ├── activity-log/
+│   │   │   ├── modals/
+│   │   │   ├── ui/                    # Buttons, inputs, dropdowns, etc.
+│   │   │   └── shared/
+│   │   ├── context/                   # AuthContext, WorkspaceContext, SocketContext
+│   │   ├── hooks/                     # useAuth, useSocket, usePermissions, useTasks...
+│   │   ├── lib/                       # axios instance, query client, socket client
+│   │   ├── services/                  # API call wrappers per domain (tasksApi.ts, chatApi.ts...)
+│   │   ├── types/                     # Shared TS types/interfaces, mirrors backend DTOs
+│   │   ├── utils/                     # Formatters, permission helpers, constants
+│   │   ├── styles/                    # Tailwind config extensions, globals.css
+│   │   └── tests/
+│   ├── index.html
+│   ├── tailwind.config.ts
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   └── package.json
+│
+├── backend/                           # Node.js + JavaScript + Express
+│   ├── src/
+│   │   ├── server.js                  # Entry point: HTTP server + Socket.io bootstrap
+│   │   ├── app.js                     # Express app config (middleware mounting)
+│   │   │
+│   │   ├── config/
+│   │   │   ├── env.js                 # Centralized env var loading/validation
+│   │   │   ├── db.js                  # Prisma client instantiation
+│   │   │   ├── redis.js               # Redis client (chat scaling, presence)
+│   │   │   ├── minio.js               # MinIO client + bucket bootstrap
+│   │   │   └── socket.js              # Socket.io server config + Redis adapter
+│   │   │
+│   │   ├── routes/                    # One file per resource, mounts controllers
+│   │   │   ├── index.js               # Aggregates and mounts all routers
+│   │   │   ├── auth.routes.js
+│   │   │   ├── workspace.routes.js
+│   │   │   ├── invitation.routes.js
+│   │   │   ├── space.routes.js
+│   │   │   ├── list.routes.js
+│   │   │   ├── task.routes.js
+│   │   │   ├── comment.routes.js
+│   │   │   ├── channel.routes.js
+│   │   │   ├── message.routes.js
+│   │   │   ├── notification.routes.js
+│   │   │   ├── activityLog.routes.js
+│   │   │   ├── member.routes.js
+│   │   │   ├── fileHub.routes.js
+│   │   │   └── personalSpace.routes.js
+│   │   │
+│   │   ├── controllers/               # Request/response handling, calls services
+│   │   │   ├── auth.controller.js
+│   │   │   ├── workspace.controller.js
+│   │   │   ├── invitation.controller.js
+│   │   │   ├── space.controller.js
+│   │   │   ├── list.controller.js
+│   │   │   ├── task.controller.js
+│   │   │   ├── comment.controller.js
+│   │   │   ├── channel.controller.js
+│   │   │   ├── message.controller.js
+│   │   │   ├── notification.controller.js
+│   │   │   ├── activityLog.controller.js
+│   │   │   ├── member.controller.js
+│   │   │   ├── fileHub.controller.js
+│   │   │   └── personalSpace.controller.js
+│   │   │
+│   │   ├── services/                  # Business logic, DB transactions, no req/res
+│   │   │   ├── auth.service.js
+│   │   │   ├── workspace.service.js
+│   │   │   ├── invitation.service.js
+│   │   │   ├── space.service.js
+│   │   │   ├── list.service.js
+│   │   │   ├── task.service.js
+│   │   │   ├── taskAssignment.service.js
+│   │   │   ├── selfAssignment.service.js
+│   │   │   ├── comment.service.js
+│   │   │   ├── channel.service.js
+│   │   │   ├── message.service.js
+│   │   │   ├── notification.service.js
+│   │   │   ├── activityLog.service.js
+│   │   │   ├── member.service.js
+│   │   │   ├── roleChange.service.js
+│   │   │   ├── fileHub.service.js
+│   │   │   ├── softDelete.service.js
+│   │   │   └── personalSpace.service.js
+│   │   │
+│   │   ├── middlewares/
+│   │   │   ├── authenticate.js        # JWT verification
+│   │   │   ├── requireRole.js         # Role-gate middleware factory
+│   │   │   ├── requireWorkspaceMember.js
+│   │   │   ├── validateRequest.js     # Zod schema validation wrapper
+│   │   │   ├── errorHandler.js        # Centralized error -> consistent response shape
+│   │   │   ├── rateLimiter.js
+│   │   │   └── requestLogger.js
+│   │   │
+│   │   ├── validators/                # Zod schemas per resource
+│   │   │   ├── auth.validator.js
+│   │   │   ├── space.validator.js
+│   │   │   ├── list.validator.js
+│   │   │   ├── task.validator.js
+│   │   │   ├── channel.validator.js
+│   │   │   ├── invitation.validator.js
+│   │   │   └── member.validator.js
+│   │   │
+│   │   ├── sockets/                   # Socket.io event handlers, namespaced by domain
+│   │   │   ├── index.js               # Registers all socket handlers on connection
+│   │   │   ├── presence.socket.js
+│   │   │   ├── chat.socket.js
+│   │   │   ├── task.socket.js
+│   │   │   └── notification.socket.js
+│   │   │
+│   │   ├── jobs/                      # Background/scheduled work
+│   │   │   ├── invitationExpiry.job.js
+│   │   │   └── activityLogArchival.job.js
+│   │   │
+│   │   ├── utils/
+│   │   │   ├── apiResponse.js         # Standard success/error envelope builder
+│   │   │   ├── permissions.js         # Role/permission constant helpers
+│   │   │   ├── pagination.js
+│   │   │   ├── tokens.js              # JWT sign/verify helpers
+│   │   │   └── logger.js              # Structured logging (pino or winston)
+│   │   │
+│   │   └── docs/
+│   │       └── swagger.js             # OpenAPI spec generation config
+│   │
+│   ├── prisma/
+│   │   ├── schema.prisma
+│   │   ├── migrations/
+│   │   └── seed.js
+│   │
+│   ├── tests/
+│   │   ├── unit/
+│   │   └── integration/
+│   │
+│   ├── Dockerfile
+│   └── package.json
+│
+└── infra/
+    ├── docker/
+    │   ├── postgres/
+    │   ├── redis/
+    │   └── minio/
+    └── nginx/                         # Reverse proxy + load balancing config
+        └── nginx.conf
+```
+
+Work on `frontend/`, `backend/`, and `prisma/schema.prisma` (database)
+**simultaneously and consistently** — every backend route added must
+have a matching frontend service call and type definition; every
+Prisma model added must be reflected in backend validators and
+frontend types. Do not build one layer fully before starting another;
+build vertically, one feature/domain at a time, all the way through
+all three layers.
+
+---
+
+## 4. SCALABILITY, PERFORMANCE & INFRASTRUCTURE REQUIREMENTS
+
+WaveWork must be architected to handle **high concurrent traffic and a
+large number of simultaneous real-time connections**, using only free,
+self-hostable infrastructure. Apply the following:
+
+### 4.1 Database performance
+- Add indexes on every foreign key column and every column used in a
+  `WHERE` filter (especially `workspaceId`, `assignedTo`, `status`,
+  `createdBy`).
+- Use Prisma's `select` to fetch only needed fields on list endpoints —
+  never `findMany()` with implicit full-row selects on large tables.
+- Use cursor-based pagination (not offset-based) for Tasks, Messages,
+  Activity Logs, and Notifications, since offset pagination degrades
+  at scale.
+- Use PostgreSQL connection pooling (Prisma's built-in pool, tuned via
+  `connection_limit` in the database URL) sized to the deployment's
+  CPU count.
+
+### 4.2 Caching
+- Use Redis as a read-through cache for hot, infrequently-changing
+  data: workspace settings, member directory listing, and channel
+  metadata.
+- Invalidate cache keys explicitly on writes (no time-based-only
+  expiry for data that must stay consistent, e.g. role changes).
+
+### 4.3 Real-time chat scaling (Redis)
+- Socket.io must run behind the **Redis adapter**
+  (`@socket.io/redis-adapter`) so multiple backend instances can share
+  socket state and broadcast across instances — this is the specific,
+  required use of Redis in this build.
+- Use Redis to track **online/presence status** per user
+  (`SET user:{id}:online` with TTL refreshed on heartbeat) rather than
+  holding presence purely in-memory on one Node process.
+- All chat and notification broadcasts must emit to a
+  workspace-scoped Socket.io room (e.g. `workspace:{workspaceId}`),
+  never a global broadcast, both for correctness (workspace isolation)
+  and for performance (smaller fan-out per event).
+
+### 4.4 File storage scaling (MinIO)
+- All file uploads (task attachments, chat file-shares, profile
+  pictures, workspace logos) go through MinIO, never local disk
+  storage, so the backend remains stateless and horizontally
+  scalable.
+- Use pre-signed URLs for both upload and download where practical, so
+  large file transfers don't proxy through the Express server's event
+  loop.
+- Store only the MinIO object key + metadata (size, mime type,
+  uploader, workspace ID) in PostgreSQL — never the file binary.
+
+### 4.5 Horizontal scaling readiness
+- The backend must be stateless: no in-memory session storage, no
+  in-memory socket-only state that isn't also mirrored in Redis. This
+  allows running multiple backend container replicas behind a load
+  balancer (see `infra/nginx/`).
+- Use environment-variable-driven configuration throughout (no
+  hardcoded ports, hosts, or secrets) so the same image can be deployed
+  to any number of replicas.
+
+### 4.6 Rate limiting & abuse protection
+- Apply a Redis-backed rate limiter (e.g. `rate-limit-redis` with
+  `express-rate-limit`) on authentication endpoints and on
+  write-heavy endpoints (task creation, message sending) to protect
+  against traffic spikes and abuse, since in-memory rate limiting
+  doesn't work correctly across multiple backend replicas.
+
+### 4.7 Background jobs
+- Long-running or deferred work (invitation-expiry sweeps, activity
+  log archival housekeeping) should run as scheduled jobs (`node-cron`
+  is acceptable as a free, dependency-light scheduler) rather than
+  blocking request/response cycles.
+
+---
+
+## 5. ROLE & WORKSPACE HIERARCHY ARCHITECTURE SPECIFICATION
+### (AUTHORITATIVE — IMPLEMENT EXACTLY AS WRITTEN)
+
+> Everything in this Section 5 is the complete, final business-logic
+> specification for WaveWork. It was developed and refined over
+> multiple iterations and is considered done. Implement every rule,
+> every data model, every sidebar item, and every permission boundary
+> below exactly as written. Do not simplify, omit, merge, or
+> reinterpret any rule. Where this section's wording differs from
+> looser language earlier in this document (Sections 1–4), this
+> section governs.
+
+================================================================
+CRITICAL IMPLEMENTATION RULES
+================================================================
+
+This is a **greenfield build** for this engagement — there is no prior
+WaveWork codebase to preserve in this context. However, the rules below
+were originally written for a refactor of an existing system, and their
+underlying intent — minimal surface area, clean separation of concerns,
+and strict backend enforcement — still governs how this fresh build
+must be structured:
+
+Only build files, routes, models, permissions, APIs, sidebar
+configuration, task workflows, notifications, and UI components that
+are directly required for the hierarchy described in this document.
+
+Do not introduce speculative modules beyond what's specified here.
+
+Do not couple unrelated features together.
+
+Preserve clean module boundaries as the codebase grows.
+
+Before implementing any feature:
+
+1. Design the data model first.
+2. Reuse existing patterns within this codebase once established
+   (e.g. one consistent permission-check helper, reused everywhere).
+3. Extend existing models rather than creating overlapping ones.
+4. Touch the minimum number of files required for each feature slice.
+5. Preserve backward compatibility within the app's own evolving
+   schema once the first version ships (additive migrations
+   preferred over destructive ones).
+
+IMPORTANT — PERMISSION ENFORCEMENT LAYER:
+
+Permission checks must be enforced BOTH:
+
+- Frontend UI Level
+- Backend API Level
+
+Hiding buttons is NOT enough.
+
+Every restricted action must also be validated server-side.
+
+Employees must never gain access through:
+
+- Direct API calls
+- Browser DevTools
+- URL manipulation
+- Client-side bypasses
+
+Backend permission validation is mandatory.
+
+================================================================
+PERMISSION CONFLICT RESOLUTION RULES
+================================================================
+
+If two sections appear to conflict, resolve in this order of priority:
+
+1. Backend API Permissions take priority.
+2. Role Restrictions take priority over UI visibility.
+3. Workspace Isolation Rules take priority over all other rules.
+4. Activity Logging requirements apply to all actions.
+5. Security rules override convenience features.
+
+Example: If a button is visible due to a UI bug but backend permission
+denies the action, the request must fail.
+
+================================================================
+DATABASE TRANSACTION RULES
+================================================================
+
+Critical multi-step operations must be executed atomically (Prisma
+`$transaction`).
+
+Examples:
+
+- Workspace Creation
+- Invitation Acceptance
+- Role Changes
+- Task Assignment
+- Workspace Ownership Transfer
+
+If any step fails:
+
+- Rollback entire operation
+- Prevent partial data creation
+
+Example:
+
+Workspace Creation
+Create Workspace
+→ Create Super Admin Membership
+→ Create Default Notifications
+
+If Membership creation fails: Workspace should NOT be created.
+
+Purpose: Prevent inconsistent database state.
+
+================================================================
+REAL-TIME EVENT SYSTEM
+================================================================
+
+The following actions must update in real time:
+
+- Task Assigned
+- Task Status Changed
+- Task Comment Added
+- Self-Assigned Task Created
+- Direct Message Sent
+- Channel Message Sent
+- Channel Mention
+- User Joined Workspace
+- Role Changed
+- Notification Created
+
+Real-time updates should use the Socket.io + Redis adapter architecture
+described in Section 4.3.
+
+Do not create a second real-time system.
+
+Reuse the existing socket infrastructure for every real-time feature.
+
+All real-time events must remain scoped to the correct Workspace.
+
+Users must never receive events belonging to another Workspace.
+
+================================================================
+API AUTHORIZATION STANDARD
+================================================================
+
+Every protected API endpoint must validate:
+
+1. Authentication
+2. Workspace Membership
+3. Role Permissions
+4. Resource Ownership (when applicable)
+
+Validation Flow:
+
+Authentication
+→ Workspace Validation
+→ Permission Validation
+→ Resource Validation
+
+Requests failing validation must return 401 Unauthorized or 403
+Forbidden as appropriate.
+
+No protected endpoint may rely solely on frontend validation.
+
+Every mutating operation must validate permissions server-side.
+
+Examples:
+
+- Create Space
+- Delete Space
+- Create List
+- Delete List
+- Assign Task
+- Change Role
+- Delete Channel
+- Archive Channel
+
+Backend authorization is mandatory.
+
+================================================================
+WAVEWORK CORE PHILOSOPHY
+================================================================
+
+WaveWork is a workspace-centric project management platform.
+
+The entire application revolves around a single Workspace.
+
+Every user belongs to a workspace.
+
+There are no separate workspaces for admins or employees.
+
+All users collaborate inside the same workspace.
+
+Example:
+
+Workspace: Apple
+
+Members:
+- Karthik (Super Admin)
+- Ravi (Admin)
+- Sai (Employee)
+- Rahul (Employee)
+- Priya (Employee)
+
+All five users work inside the same workspace.
+
+================================================================
+WORKSPACE CREATION FLOW
+================================================================
+
+Step 1 — A user signs up.
+
+Step 2 — The user creates a Workspace.
+Example: Workspace Name: Apple
+
+Step 3 — The creator automatically becomes: Super Admin.
+
+Step 4 — The Super Admin gains full control over the workspace.
+
+----------------------------------------------------------------
+DEFAULT WORKSPACE BOOTSTRAP
+----------------------------------------------------------------
+
+When a Workspace is created, automatically create:
+
+- General Space
+- Getting Started List
+- #general Channel
+
+Example:
+
+Workspace: Apple
+Automatically Creates:
+Space: General
+List: Getting Started
+Channel: #general
+
+Purpose: Provide immediate usability after workspace creation.
+
+Default resources must be linked to the Workspace and included in
+Activity Logs.
+
+================================================================
+WORKSPACE INVITATION FLOW
+================================================================
+
+Super Admin can invite:
+- Admins
+- Employees
+
+Admins can invite:
+- Employees only
+
+Invitations occur through email.
+
+Workflow:
+
+Invite User
+→ Email Sent
+→ User Accepts Invitation
+→ User Joins Workspace
+
+After joining, the user automatically becomes part of the workspace.
+No additional workspace setup is required.
+
+----------------------------------------------------------------
+INVITATION ACCEPTANCE RULES
+----------------------------------------------------------------
+
+Every invitation should contain:
+
+- Email
+- Role
+- Workspace ID
+- Expiration Date
+
+When an invitation is accepted:
+
+- User account is created if necessary
+- User is linked to the Workspace
+- Assigned role is applied
+- Workspace Activity Log entry is created
+- Workspace Join notification is generated
+
+Expired invitations must not be accepted.
+
+Invalid invitations must be rejected.
+
+================================================================
+SINGLE WORKSPACE MODEL
+================================================================
+
+IMPORTANT
+
+Once a user joins a workspace, they are part of the same company
+environment.
+
+Example:
+
+Apple Workspace contains: Super Admin, Admins, Employees.
+
+Everyone works together.
+
+There should never be separate dashboards or isolated workspaces.
+
+Only permissions differ.
+
+================================================================
+WORKSPACE MEMBERSHIP MODEL — CURRENT IMPLEMENTATION SCOPE
+================================================================
+
+For this release, users operate within a single active workspace.
+
+Do NOT implement multi-workspace switching in this build.
+
+Future support for multiple workspaces may be added later.
+
+Maintain workspace isolation architecture so future expansion remains
+possible.
+
+Every workspace is completely isolated.
+
+Data from one workspace must never leak into another workspace.
+
+All Spaces, Tasks, Chats, Notifications, Files, and Members must always
+remain scoped to their Workspace.
+
+Future multi-workspace support may be added in a later version but is
+out of scope for this implementation.
+
+----------------------------------------------------------------
+WORKSPACE DATA ISOLATION RULES
+----------------------------------------------------------------
+
+Every major entity must contain Workspace ID.
+
+Examples:
+
+- Members
+- Spaces
+- Lists
+- Tasks
+- Channels
+- Direct Messages
+- Notifications
+- Activity Logs
+- Files
+
+All database queries must be filtered by Workspace ID.
+
+Example:
+
+Workspace A users must never access Tasks, Channels, Files,
+Notifications, or Members belonging to Workspace B.
+
+Workspace isolation must be enforced at:
+
+- Database Query Layer
+- Backend API Layer
+
+This rule is mandatory and applies throughout the system.
+
+----------------------------------------------------------------
+ENTITY OWNERSHIP MODEL
+----------------------------------------------------------------
+
+Every major entity must store ownership metadata.
+
+Space:
+- Created By
+- Workspace ID
+
+List:
+- Created By
+- Workspace ID
+
+Task:
+- Created By
+- Assigned To
+- Workspace ID
+
+Channel:
+- Created By
+- Workspace ID
+
+Comment:
+- Created By
+- Workspace ID
+
+File:
+- Uploaded By
+- Workspace ID
+
+Notification:
+- Recipient User ID
+- Workspace ID
+
+Activity Log:
+- Actor User ID
+- Workspace ID
+
+Purpose: Maintain complete auditability and permission validation.
+
+================================================================
+ROLE SYSTEM OVERVIEW
+================================================================
+
+There are 3 roles:
+
+1. Super Admin
+2. Admin
+3. Employee
+
+----------------------------------------------------------------
+SUPER ADMIN RESPONSIBILITIES
+----------------------------------------------------------------
+
+Super Admin can:
+
+- Create workspace
+- Manage workspace settings
+- Invite Admins via email
+- Invite Employees via email
+- Create Spaces
+- Edit Spaces
+- Delete Spaces
+- Create Lists inside Spaces
+- Edit Lists
+- Delete Lists
+- Assign tasks to Admins
+- Assign tasks to Employees
+- Track Admin progress
+- Track Employee progress
+- View workspace analytics
+- Participate in channels
+- Participate in one-to-one chats
+
+----------------------------------------------------------------
+ADMIN RESPONSIBILITIES
+----------------------------------------------------------------
+
+Admin can:
+
+- Invite Employees via email
+- Create Spaces
+- Edit Spaces
+- Delete Spaces
+- Create Lists
+- Edit Lists
+- Delete Lists
+- Assign tasks to Employees
+- Track Employee progress
+- Participate in channels
+- Participate in one-to-one chats
+
+Admin CANNOT:
+
+- Create workspace
+- Modify workspace ownership
+- Manage Super Admin permissions
+- Change roles / promote / demote anyone
+
+----------------------------------------------------------------
+EMPLOYEE RESPONSIBILITIES
+----------------------------------------------------------------
+
+Employees CANNOT:
+
+- Create Spaces
+- Edit Spaces
+- Delete Spaces
+- Create Lists
+- Edit Lists
+- Delete Lists
+- Invite users
+- Assign tasks to other people
+- Change roles or modify permissions
+
+Employees CAN:
+
+- View all workspace spaces
+- View tasks
+- Update task status (on tasks assigned to them)
+- Upload attachments
+- Comment on tasks
+- Join channels
+- Create channels (see Channel Management section)
+- Use direct messaging
+- Create self-assigned tasks
+
+================================================================
+SPACE VISIBILITY MODEL
+================================================================
+
+All workspace members can see all spaces.
+
+Example: Development, Design, Testing
+
+Employees can see: Development, Design, Testing
+Admins can see: Development, Design, Testing
+Super Admin can see: Development, Design, Testing
+
+Visibility is shared. Permission is restricted.
+
+No space-level member restrictions are required.
+
+Permission control happens through actions, not visibility.
+
+Employees can see spaces. Employees cannot manage spaces.
+
+================================================================
+SPACE ACCESS MODEL
+================================================================
+
+When a new Space is created (e.g. "Development"), the Space automatically
+becomes visible to all workspace members.
+
+No manual "Add Members To Space" workflow is required.
+
+Space visibility is inherited from Workspace membership.
+
+Example:
+
+Workspace: Apple
+Members: Ravi, Sai, Rahul, Priya
+Space: Development
+
+Result: All workspace members can immediately see the Development Space.
+
+Permissions determine actions. Visibility does not determine permissions.
+
+Employees can view Spaces. Only Super Admin and Admin can manage Spaces.
+
+================================================================
+SPACE MANAGEMENT MODEL
+================================================================
+
+Only Super Admin and Admin can create spaces.
+
+Employees cannot create, edit, delete, rename, or otherwise modify spaces
+or workspace structure.
+
+----------------------------------------------------------------
+SPACE DATA MODEL
+----------------------------------------------------------------
+
+Each Space should contain:
+
+- Space Name
+- Description
+- Icon
+- Color
+- Created By
+- Created At
+- Updated At
+
+Structure:
+
+Workspace → Spaces → Lists → Tasks
+
+Example:
+
+Apple Workspace → Development → Backend → Login API Task
+
+================================================================
+LIST MANAGEMENT MODEL
+================================================================
+
+Inside spaces:
+
+Space → Lists → Tasks
+
+Example:
+
+Development → Backend, Frontend, QA
+
+Only Super Admin and Admin can create, edit, and delete Lists.
+
+Employees cannot manage lists.
+
+================================================================
+TASK MANAGEMENT MODEL
+================================================================
+
+Tasks are the primary working unit.
+
+Tasks belong to Lists. Lists belong to Spaces. Spaces belong to the
+Workspace.
+
+Example:
+
+Workspace → Development → Backend → "Create Login API"
+
+----------------------------------------------------------------
+TASK DATA MODEL
+----------------------------------------------------------------
+
+Each Task should support:
+
+- Title
+- Description
+- Status
+- Priority
+- Due Date
+- Created By
+- Assigned To
+- Space
+- List
+- Attachments
+- Comments
+- Created At
+- Updated At
+
+Statuses:
+
+- To Do (25%)
+- In Progress (50%)
+- In Review (75%)
+- Done (100%)
+
+Task progress must update automatically based on status.
+
+----------------------------------------------------------------
+TASK STATUS VALIDATION
+----------------------------------------------------------------
+
+Only valid task status transitions are allowed:
+
+To Do → In Progress
+In Progress → In Review
+In Review → Done
+
+Managers may override status if required.
+
+----------------------------------------------------------------
+TASK COMMENTS MODEL
+----------------------------------------------------------------
+
+Every Task supports comments.
+
+Comment fields:
+
+- Author
+- Message
+- Created At
+- Updated At
+
+Supported Features:
+
+- Text Comments
+- File Attachments
+- Mentions (@user)
+
+Generate notifications for:
+
+- New Comment
+- Mention In Comment
+- Reply To Comment
+
+Comments are visible to all workspace members who can view the task.
+
+----------------------------------------------------------------
+TASK ASSIGNMENT VALIDATION RULES
+----------------------------------------------------------------
+
+Super Admin may assign tasks to:
+- Admin
+- Employee
+
+Admin may assign tasks to:
+- Employee
+
+Admin may NOT assign tasks to:
+- Super Admin
+- Other Admins
+
+Employee may NOT assign tasks to:
+- Anyone except themselves through Self-Assignment.
+
+Backend validation is mandatory.
+
+================================================================
+TASK VISIBILITY RULES
+================================================================
+
+Task visibility and task modification permissions are separate
+concepts.
+
+All workspace members can view tasks inside visible spaces.
+
+Since all members can see all spaces, all members can also see the tasks
+inside those spaces.
+
+Example:
+
+Workspace: Apple
+Members: Karthik (Super Admin), Ravi (Admin), Sai (Employee), Rahul
+(Employee)
+Space: Development → List: Backend
+Tasks: "Build Login API" (Assigned To Rahul), "Build Register API"
+(Assigned To Sai)
+
+Result: Sai can see Rahul's task. Rahul can see Sai's task. Visibility
+is shared across the workspace. Permissions remain restricted.
+
+Employees may view:
+
+- Task Title
+- Task Description
+- Assignee
+- Status
+- Priority
+- Due Date
+- Progress Percentage
+- Attachments
+- Comments
+
+Employees may comment on and participate in discussion on any task
+they can see, regardless of who it's assigned to.
+
+Employees may NOT:
+
+- Edit tasks assigned to other users
+- Delete tasks assigned to other users
+- Reassign tasks assigned to other users
+- Modify management-controlled fields on tasks assigned to other users
+
+Employees may only modify tasks assigned to themselves, subject to the
+Self-Assignment rules below.
+
+Example:
+
+Development Space → Backend List
+Task: "Build Login API" — Assigned To: Rahul
+
+Sai can see the task. Sai cannot modify Rahul's task.
+Rahul can update the task because it is assigned to him.
+
+----------------------------------------------------------------
+TASK VISIBILITY IMPLEMENTATION REQUIREMENT
+----------------------------------------------------------------
+
+Do NOT filter task visibility (read queries) by Assigned User ID.
+
+Task read queries must be scoped by Workspace ID only — every
+workspace member's task list/board/detail queries return every
+non-deleted task in the workspace, not just their own.
+
+Modification endpoints (update, delete, reassign, status-override) are
+where the assignee/role check belongs — apply the Task Assignment
+Validation Rules and the Employee restrictions above at the mutation
+layer, never at the read/visibility layer.
+
+In short: the same `GET /tasks` query is shared by every role; the
+difference between roles shows up only in which buttons render and
+which `PATCH`/`DELETE` requests the backend will accept — never in
+which rows the `GET` returns.
+
+================================================================
+EMPLOYEE SELF-ASSIGNMENT MODEL
+================================================================
+
+This is a custom WaveWork feature.
+
+Employees may create tasks assigned to themselves.
+
+Reason: Managers may be unavailable.
+
+Workflow:
+
+Employee → Create Task → Assign To Self
+
+System stores:
+
+- Created By
+- Assigned To
+- Assignment Type = SELF_ASSIGNED
+
+Immediately notify:
+
+- Super Admin
+- Relevant Admin
+
+Managers must know the task exists.
+
+----------------------------------------------------------------
+SELF-ASSIGNMENT BEHAVIOR
+----------------------------------------------------------------
+
+Employee self-assigned tasks become ACTIVE immediately.
+
+No approval workflow is required.
+
+Once created, notify:
+
+- Super Admin
+- Relevant Admin
+
+Employees can:
+
+- Update status
+- Upload files
+- Add comments
+- Update progress
+
+Employees cannot:
+
+- Delete the task
+- Reassign the task
+- Modify management fields
+
+================================================================
+SIDEBAR STRUCTURE
+================================================================
+
+----------------------------------------------------------------
+SUPER ADMIN SIDEBAR (must contain at minimum)
+----------------------------------------------------------------
+
+1. Assign Tasks
+2. Unified Alerts
+3. Track Progress
+4. My Tasks
+5. My Personal Space
+6. My File Hub
+7. Spaces & Directories
+8. Channels / Group Chats
+9. Direct Messages
+
+Remove sidebar items that don't belong under this role's permissions.
+These items are the required baseline for this role — not an exhaustive
+ceiling. Future modules such as Calendar, Reports, Time Tracking, Team
+Analytics, or AI Assistant may be added later without violating this
+specification.
+
+----------------------------------------------------------------
+ADMIN SIDEBAR (must contain at minimum)
+----------------------------------------------------------------
+
+1. Assign Tasks
+2. Unified Alerts
+3. Track Progress
+4. My Tasks
+5. My Personal Space
+6. My File Hub
+7. Spaces & Directories
+8. Channels / Group Chats
+9. Direct Messages
+
+The UI may look identical to Super Admin. However permissions differ.
+
+Admin cannot: Create Workspace, Change Workspace Ownership, Manage Super
+Admin permissions.
+
+Admin can: Assign tasks to employees, Create spaces, Create lists, Track
+employees.
+
+----------------------------------------------------------------
+EMPLOYEE SIDEBAR (must contain at minimum)
+----------------------------------------------------------------
+
+1. Unified Alerts
+2. My Tasks
+3. My Personal Space
+4. My File Hub
+5. Spaces & Directories
+6. Channels / Group Chats
+7. Direct Messages
+
+Employees should NOT see: Assign Tasks, Track Progress. Those management
+modules are hidden.
+
+================================================================
+1. ASSIGN TASKS (Super Admin / Admin)
+================================================================
+
+Purpose: Assign tasks to Admins and Employees.
+
+The Super Admin can create, assign, edit, monitor, and manage all tasks.
+The Admin can assign tasks to Employees and manage those assignments.
+
+================================================================
+2. UNIFIED ALERTS MODULE
+================================================================
+
+Central notification center. Available to ALL roles.
+
+Generate alerts for:
+
+- New task assigned
+- Task status changes
+- Self-assigned task creation
+- New direct message
+- Group chat / channel invitation
+- Channel mention
+- File upload / file shared in channel
+- Workspace invitation
+- Space creation
+- Added to channel
+- Channel created
+- Reply to message
+- Role changes (see Role Change Rules)
+
+Alerts should update in real time.
+
+----------------------------------------------------------------
+NOTIFICATION READ STATE
+----------------------------------------------------------------
+
+Every notification should support the following fields:
+
+- Is Read
+- Read At
+- Created At
+
+================================================================
+3. TRACK PROGRESS DASHBOARD
+================================================================
+
+Workspace-level monitoring. Available to Super Admin and Admin only.
+
+----------------------------------------------------------------
+SUPER ADMIN VIEW
+----------------------------------------------------------------
+
+Should display:
+
+- Total Tasks
+- Completed Tasks
+- Pending Tasks
+- Overdue Tasks
+- Admin Productivity
+- Employee Productivity
+- Workspace Completion Percentage
+
+----------------------------------------------------------------
+ADMIN VIEW
+----------------------------------------------------------------
+
+Should display:
+
+- Employee Tasks
+- Completed Tasks
+- Pending Tasks
+- Overdue Tasks
+- Employee Completion Rates
+- Employee Productivity Metrics
+
+================================================================
+4. MY TASKS MODULE
+================================================================
+
+Available for ALL roles. Tasks assigned directly to the current user.
+
+Contains:
+
+1. Dashboard View
+2. List View
+
+List View Status Columns:
+
+- To Do (25%)
+- In Progress (50%)
+- In Review (75%)
+- Done (100%)
+
+When a task is assigned:
+
+- Notification generated
+- Task automatically appears in My Tasks
+- Task visible in Dashboard View
+- Task visible in List View
+
+When status changes:
+
+- Progress updates automatically
+- Managers can see changes immediately
+
+================================================================
+5. MY PERSONAL SPACE
+================================================================
+
+Private module. Visible ONLY to the owner. No Admin access. No Super
+Admin access.
+
+Contains:
+
+1. List View — Personal Tasks
+   Statuses: To Do, In Progress, In Review, Done
+2. Scratchpad — Free-form notes
+3. Interactive Whiteboard — Personal diagrams and planning
+
+Completely private.
+
+================================================================
+6. MY FILE HUB
+================================================================
+
+Personal document center.
+
+Purpose: Store files received through task assignments.
+
+----------------------------------------------------------------
+FILE HUB BEHAVIOR
+----------------------------------------------------------------
+
+Files attached to tasks should automatically appear inside the
+recipient's File Hub.
+
+Example:
+
+Task: "Build Dashboard"
+Attachment: dashboard-specification.pdf
+Result: File automatically appears in recipient File Hub.
+
+Users may:
+
+- Pin file
+- Favorite file
+- Rename display label
+- Search files
+- Filter files
+
+These actions affect personal organization only. Original task
+attachments remain unchanged.
+
+----------------------------------------------------------------
+FILE OWNERSHIP MODEL
+----------------------------------------------------------------
+
+Files must maintain original ownership metadata.
+
+Store:
+
+- Uploaded By
+- Uploaded At
+- Workspace ID
+- Related Task ID (if applicable)
+
+Moving a file into My File Hub must NOT duplicate the file.
+
+My File Hub acts as a personal reference layer.
+
+Original task-file relationships must remain intact.
+
+File ownership and audit history must be preserved.
+
+================================================================
+7. SPACES & DIRECTORIES
+================================================================
+
+Core project management module.
+
+Structure: Workspace → Spaces → Lists → Tasks
+
+Example: Development → Backend, Frontend
+
+Tasks exist inside lists. Only Super Admin and Admin may manage spaces
+and lists. Employees may interact only with tasks.
+
+================================================================
+8. CHANNELS / GROUP CHATS
+================================================================
+
+Workspace-wide communication hubs.
+
+Examples: #development, #design, #testing, #announcements, #frontend,
+#backend
+
+All roles may participate.
+
+----------------------------------------------------------------
+CHANNEL PERMISSIONS BY ROLE
+----------------------------------------------------------------
+
+SUPER ADMIN can:
+- Create Channels
+- Edit Channels
+- Delete Channels
+- Archive Channels
+- Manage Channel Members
+
+ADMIN can:
+- Create Channels
+- Edit Channels
+- Delete Channels
+- Archive Channels
+- Manage Channel Members
+
+EMPLOYEE can:
+- Create Channels
+- Join Channels
+- Leave Channels
+- Send Messages
+- Share Files
+- Mention Members
+- React To Messages
+
+Employees CANNOT:
+- Delete Channels created by other users
+- Edit Channels created by other users
+- Archive Channels created by other users
+
+----------------------------------------------------------------
+CHANNEL OWNERSHIP RESTRICTIONS
+----------------------------------------------------------------
+
+Employees may create channels. However, only Super Admin and Admin may:
+
+- Delete Channels
+- Archive Channels
+- Manage Channel Permissions
+
+This applies workspace-wide — including channels an Employee created
+themselves.
+
+Employees who create a channel may still:
+
+- Rename their own channel
+- Update their own channel description
+
+Employees may NOT, even on channels they created:
+
+- Delete the channel
+- Archive the channel
+- Manage channel permissions
+- Manage membership permissions
+
+This restriction applies even if the employee originally created the
+channel.
+
+----------------------------------------------------------------
+CHANNEL OWNERSHIP
+----------------------------------------------------------------
+
+When a user creates a channel, store:
+
+- Channel Creator
+- Created At
+- Workspace ID
+
+Example:
+
+Sai creates #api-integration
+System stores: Creator: Sai, Role: Employee, Workspace: Apple
+
+----------------------------------------------------------------
+CHANNEL VISIBILITY
+----------------------------------------------------------------
+
+All channels belong to a workspace. All workspace members can discover
+and join channels.
+
+Example:
+
+Apple Workspace: #development, #design, #testing, #frontend, #backend
+
+----------------------------------------------------------------
+CHANNEL FEATURES
+----------------------------------------------------------------
+
+Every channel supports:
+
+- Real-time Messaging
+- File Sharing
+- Mentions (@user)
+- Reactions
+- Message History
+- Read Status
+- Search Messages
+- Pinned Messages
+
+----------------------------------------------------------------
+CHANNEL NOTIFICATIONS
+----------------------------------------------------------------
+
+Generate alerts for:
+
+- Added To Channel
+- Mentioned In Channel
+- Channel Created
+- File Shared In Channel
+- Reply To Message
+
+These alerts appear in Unified Alerts.
+
+================================================================
+9. DIRECT MESSAGES
+================================================================
+
+One-to-one communication.
+
+Available to: Super Admin, Admin, Employee.
+
+Any workspace member can directly message any other workspace member
+within the same workspace.
+
+Support:
+
+- Real-time Messaging
+- Read Receipts
+- File Attachments
+- Message History
+- Mentions
+
+================================================================
+10. WORKSPACE ACTIVITY LOGS
+================================================================
+
+Centralized workspace activity system.
+
+Examples:
+
+- Space Created / Updated
+- List Created
+- Task Created
+- Task Assigned
+- Task Status Changed
+- Self-Assigned Task Created
+- File Uploaded
+- User Invited
+- User Joined Workspace
+- Role Changed (see Role Change Rules)
+
+Visible to: Super Admin, Admin.
+
+Purpose: Audit trail and malpractice prevention.
+
+----------------------------------------------------------------
+ACTIVITY LOG RETENTION POLICY
+----------------------------------------------------------------
+
+Activity Logs must never be hard deleted.
+
+Activity Logs must remain available for:
+
+- Security Audits
+- Workspace History
+- Ownership History
+- Role Change History
+- Permission Change History
+- Recovery Operations
+
+Retention Policy: Indefinite
+
+Activity Logs must remain accessible even if related entities are soft
+deleted.
+
+Examples:
+
+- Deleted Space
+- Deleted List
+- Deleted Task
+- Deleted Channel
+
+Historical records must remain intact.
+
+Purpose: Maintain complete workspace accountability and auditability.
+
+================================================================
+11. MEMBER DIRECTORY
+================================================================
+
+Maintain a centralized Workspace Member Directory.
+
+Display:
+
+- Profile Picture
+- Name
+- Email
+- Role
+- Online Status
+
+Used by: Task Assignment, Direct Messages, Channel Invitations,
+Workspace Management.
+
+Permissions:
+
+SUPER ADMIN:
+- View Members
+- Manage Members
+- Change Roles
+
+ADMIN:
+- View Members
+- Manage Employees
+
+EMPLOYEE:
+- View Members Only
+
+Employees cannot modify member information.
+
+----------------------------------------------------------------
+MEMBER REMOVAL RULES
+----------------------------------------------------------------
+
+SUPER ADMIN:
+- Can remove Admins
+- Can remove Employees
+
+ADMIN:
+- Can remove Employees that belong to the same Workspace
+
+ADMIN may NOT:
+- Remove Super Admin
+- Remove other Admins
+
+EMPLOYEE:
+- Cannot remove members
+
+Every member removal must generate:
+- Activity Log Entry
+- Notification
+
+================================================================
+12. WORKSPACE SETTINGS
+================================================================
+
+Only Super Admin may access Workspace Settings.
+
+Workspace Settings should contain:
+
+- Workspace Name
+- Workspace Logo
+- Workspace Description
+- Member Management
+- Role Management
+- Pending Invitations
+- Activity Logs
+
+Admins cannot modify workspace ownership.
+
+Employees cannot access Workspace Settings.
+
+----------------------------------------------------------------
+WORKSPACE DELETION PROTECTION
+----------------------------------------------------------------
+
+Only Super Admin may delete a Workspace.
+
+Workspace deletion must require explicit confirmation.
+
+Workspace deletion should be soft deleted.
+
+Store:
+- Deleted By
+- Deleted At
+
+Generate:
+- Activity Log Entry
+
+================================================================
+13. ROLE CHANGE RULES
+================================================================
+
+Only Super Admin may:
+
+- Promote Employee to Admin
+- Demote Admin to Employee
+- Transfer Workspace Ownership
+- Remove Admins from the Workspace
+- Modify Role Permissions
+
+Admins CANNOT:
+
+- Change roles
+- Promote employees
+- Demote employees
+- Modify role permissions
+
+Employees CANNOT:
+
+- Change roles
+- Modify permissions
+
+Every role change must generate:
+
+- Unified Alert
+- Workspace Activity Log Entry
+
+Activity Log entry should store:
+
+- Changed By
+- Previous Role
+- New Role
+- Timestamp
+- Workspace ID
+
+Purpose: Prevent unauthorized privilege escalation and maintain a
+complete audit trail of role changes.
+
+----------------------------------------------------------------
+WORKSPACE OWNERSHIP TRANSFER
+----------------------------------------------------------------
+
+Only Super Admin may transfer workspace ownership.
+
+When ownership is transferred:
+
+Old Owner:
+- Becomes Admin
+
+New Owner:
+- Becomes Super Admin
+
+Generate:
+- Unified Alert
+- Workspace Activity Log Entry
+
+Store:
+- Previous Owner
+- New Owner
+- Timestamp
+- Workspace ID
+
+Purpose: Maintain a secure and auditable ownership transfer process.
+
+----------------------------------------------------------------
+LAST SUPER ADMIN PROTECTION
+----------------------------------------------------------------
+
+The system must never allow a Workspace to exist without a Super Admin.
+
+Prevent:
+
+- Demoting the last Super Admin
+- Removing the last Super Admin
+- Transferring ownership to an invalid user
+
+================================================================
+PERMISSION ENFORCEMENT SUMMARY
+================================================================
+
+Employees must never be able to:
+
+- Create spaces
+- Delete spaces
+- Edit spaces
+- Create lists
+- Delete lists
+- Edit lists
+- Invite users
+- Assign tasks to other users
+- Delete, edit, or archive channels created by others
+- Change roles or modify permissions
+- Access Workspace Settings
+
+Employees may only:
+
+- View spaces and lists
+- Work on tasks (full control only on tasks assigned to them)
+- Update statuses on their own tasks
+- Upload files
+- Chat (channels and direct messages, including creating channels)
+- Create self-assigned tasks
+
+All of the above restrictions must be enforced at both the Frontend UI
+level and the Backend API level, per the Critical Implementation Rules
+at the top of this section.
+
+================================================================
+CHAT SYSTEM MODEL (GENERAL)
+================================================================
+
+Every workspace member can communicate with every other workspace
+member.
+
+Support:
+
+1. Channels — Group communication
+2. Direct Messages — One-to-one communication
+3. Mentions — Tagging users
+4. File Sharing — Sharing attachments
+
+Build the chat system once and reuse it for both channels and direct
+messages — do not implement them as two separate systems.
+
+================================================================
+FINAL PRODUCT FLOW
+================================================================
+
+Super Admin Creates Workspace
+→ Invites Admins
+→ Invites Employees
+→ Members Join Workspace
+→ Admin/Super Admin Create Spaces
+→ Admin/Super Admin Create Lists
+→ Tasks Created
+→ Tasks Assigned
+→ Notifications Generated
+→ Tasks Appear In My Tasks
+→ Employees Work On Tasks (Or Self-Assign When Needed)
+→ Progress Updates In Real Time
+→ Admins Track Employees
+→ Super Admin Tracks Entire Workspace
+→ All Actions Logged To Workspace Activity Log
+
+This workflow must drive every implementation decision.
+
+================================================================
+SOFT DELETE POLICY
+================================================================
+
+Do not permanently delete critical records.
+
+Use soft delete wherever possible.
+
+Applicable entities:
+
+- Spaces
+- Lists
+- Tasks
+- Channels
+
+Store:
+
+- Deleted By
+- Deleted At
+
+Deleted records should remain available for:
+
+- Audit Logs
+- Activity Tracking
+- Administrative Recovery
+
+Every delete action must generate:
+
+- Workspace Activity Log Entry
+
+Activity logs must preserve historical records even when entities are
+deleted.
+
+**Implementation note for this build:** model `deletedAt` as a
+nullable `DateTime?` field (not a default-empty-string field), and
+ensure every read query across every service filters on
+`deletedAt: null` for "active" record lookups. This is the single
+highest-risk correctness rule in this entire specification — a missed
+filter on any read path will resurrect soft-deleted records.
+
+================================================================
+SYSTEM-WIDE IMPLEMENTATION STANDARDS
+================================================================
+
+The following standards apply across the entire WaveWork platform.
+
+----------------------------------------------------------------
+CONSISTENT TIMESTAMPS
+----------------------------------------------------------------
+
+All entities should store:
+
+- Created At
+- Updated At
+
+Where applicable also store:
+
+- Deleted At
+- Deleted By
+
+Timestamps should use a consistent timezone standard.
+
+Recommended: UTC Storage (Postgres `TIMESTAMPTZ`).
+
+Convert to local timezone only when displayed in the UI.
+
+----------------------------------------------------------------
+PAGINATION STANDARDS
+----------------------------------------------------------------
+
+Large datasets must support pagination.
+
+Examples:
+
+- Tasks
+- Channels
+- Messages
+- Notifications
+- Activity Logs
+- Members
+- Files
+
+Avoid loading large datasets in a single request. Use cursor-based
+pagination per Section 4.1.
+
+----------------------------------------------------------------
+SEARCH STANDARDS
+----------------------------------------------------------------
+
+Search functionality should be supported where applicable.
+
+Examples:
+
+- Tasks
+- Members
+- Channels
+- Messages
+- Files
+- Activity Logs
+
+Search results must remain scoped to the current Workspace.
+
+----------------------------------------------------------------
+SORTING AND FILTERING
+----------------------------------------------------------------
+
+Applicable modules should support filtering and sorting.
+
+Tasks:
+- Status
+- Priority
+- Assignee
+- Due Date
+
+Members:
+- Role
+- Online Status
+
+Files:
+- Upload Date
+- Uploaded By
+
+Activity Logs:
+- Event Type
+- User
+- Date Range
+
+----------------------------------------------------------------
+ERROR HANDLING STANDARD
+----------------------------------------------------------------
+
+All APIs should return consistent responses.
+
+Success:
+- Success Flag
+- Message
+- Data
+
+Failure:
+- Success Flag
+- Error Code
+- Error Message
+
+Avoid exposing internal server details (no raw stack traces or SQL
+errors in API responses; log them server-side instead).
+
+----------------------------------------------------------------
+AUDITABILITY STANDARD
+----------------------------------------------------------------
+
+Every sensitive action should be attributable to a user.
+
+Examples:
+
+- Space Creation
+- Space Updates
+- List Creation
+- Task Assignment
+- Role Changes
+- Channel Creation
+- Workspace Ownership Transfer
+
+System actions must remain traceable through Activity Logs.
+
+----------------------------------------------------------------
+SCALABILITY REQUIREMENT
+----------------------------------------------------------------
+
+All architecture decisions should support future expansion.
+
+Examples:
+
+- Multi Workspace Support
+- Advanced Reporting
+- Calendar Integration
+- Time Tracking
+- Sprint Management
+- AI Features
+- Automation Rules
+
+Current implementation should not block future expansion.
+
+----------------------------------------------------------------
+BACKWARD COMPATIBILITY REQUIREMENT
+----------------------------------------------------------------
+
+Once the first version of this build is functioning, new features
+should extend the existing architecture rather than replace it.
+
+Avoid breaking existing routes, APIs, models, sockets, chat systems, or
+user workflows unless absolutely required.
+
+----------------------------------------------------------------
+FINAL ARCHITECTURE AUTHORITY
+----------------------------------------------------------------
+
+This specification is the authoritative source of truth for
+implementation.
+
+If implementation decisions are unclear, use this priority order:
+
+1. Security
+2. Workspace Isolation
+3. Role Permissions
+4. Activity Logging
+5. Data Integrity
+6. Existing Architecture Reuse
+7. User Experience
+
+All implementation decisions must follow this priority order. This
+priority order extends — and does not conflict with — the Permission
+Conflict Resolution Rules defined earlier in this section.
+
+---
+
+## 5A. END-TO-END USER JOURNEY (BUILD EVERY SCREEN BELOW — NO GAPS)
+
+Section 5 above defines every business rule. This section translates
+those rules into the **literal, screen-by-screen experience** a real
+user walks through, from the very first visit to daily use. Build
+every screen and every state listed here. A screen that exists in the
+sidebar but has no working content behind it is an incomplete build —
+do not ship a sidebar item that opens a blank or placeholder page.
+
+The UI must be **simple, clean, and immediately understandable** —
+favor ClickUp's own visual clarity (clear hierarchy, generous
+whitespace, obvious primary actions, consistent iconography) over
+visual complexity. A new user should understand where they are and
+what they can do within seconds of landing on any screen, with no
+onboarding tour required to make sense of the basics.
+
+### 5A.1 First-time visit (no account)
+
+1. **Landing / Splash screen** — product name, short value proposition,
+   "Sign Up" and "Log In" buttons. No workspace exists yet for this
+   visitor.
+2. **Sign Up screen** — name, email, password, confirm password.
+   On submit: create the user account (role defaults to none/pending
+   until they either create or join a workspace).
+3. **Post-signup fork** — exactly two paths, shown clearly as two
+   choices on one screen:
+   - **"Create a Workspace"** → becomes Super Admin (Workspace
+     Creation Flow).
+   - **"Join a Workspace"** → only reachable if they arrived via a
+     valid invitation link/email; otherwise this option is hidden,
+     since there is no open public join flow in this spec.
+
+### 5A.2 Workspace creation (Super Admin path)
+
+1. **Create Workspace screen** — Workspace Name, optional Description,
+   optional Logo upload (MinIO).
+2. On submit, atomically (per Database Transaction Rules):
+   - Create the Workspace row.
+   - Create the creator's membership as `SUPER_ADMIN`.
+   - Run Default Workspace Bootstrap: create the `General` Space, the
+     `Getting Started` List inside it, and the `#general` Channel.
+   - Log a `WORKSPACE_CREATED` Activity Log entry.
+3. User lands on the **main app shell** (sidebar + content area) for
+   the first time, inside the `General` space, with `#general` already
+   joined.
+
+### 5A.3 Inviting people in (Super Admin / Admin)
+
+1. From **Workspace Settings → Invitations** (Super Admin) or a
+   reachable "Invite" action (Admin, scoped to Employee-only invites),
+   the inviter enters an email and picks a role.
+   - Super Admin sees role options: Admin, Employee.
+   - Admin sees only: Employee (the option to invite as Admin or
+     Super Admin must not even render for an Admin, per Workspace
+     Invitation Flow).
+2. System creates an `Invitation` row (email, role, workspace ID,
+   expiration) and sends an email with an accept link.
+3. **Invitation accept screen** (public, token-based, no login
+   required first): shows workspace name and the role they're being
+   invited as. If the recipient has no account yet, the accept screen
+   includes account creation fields inline. On submit:
+   - Create user account if needed.
+   - Link user to workspace with the invited role.
+   - Log `USER_JOINED_WORKSPACE`.
+   - Notify the inviter and all Super Admins that the invite was
+     accepted.
+4. New member lands in the **main app shell**, sidebar rendered
+   according to their role (see 5A.5).
+
+### 5A.4 The main app shell (every role, every session)
+
+Persistent layout used everywhere after login:
+
+- **Left sidebar** — role-specific navigation (exact contents per role
+  in 5A.5 below). Always shows the workspace name/logo at the top and
+  the current user's avatar/name/role at the bottom, with a menu for
+  profile settings and logout.
+- **Top bar** (optional but recommended) — global search (scoped to
+  workspace, per Search Standards), the Unified Alerts bell with an
+  unread-count badge, and a "+ Create" quick-action (new Task, new
+  Space, new Channel — each gated by permission, so an Employee's "+
+  Create" menu only offers Task/Self-Assigned Task and Channel).
+- **Main content area** — renders whichever sidebar item is active.
+
+### 5A.5 Sidebar → Screen mapping, per role
+
+This is the literal build list. Each sidebar item must open a fully
+working screen — not a stub.
+
+**SUPER ADMIN sidebar → screens:**
+
+| Sidebar Item | Screen(s) Behind It |
+|---|---|
+| Assign Tasks | Task creation/assignment screen: pick Space → List → enter task details → assign to any Admin or Employee. |
+| Unified Alerts | Real-time notification feed, grouped/filterable, mark-as-read, click-through to source (task, message, channel, invitation). |
+| Track Progress | Super Admin analytics dashboard: Total/Completed/Pending/Overdue Tasks, Admin Productivity, Employee Productivity, Workspace Completion %, with charts. |
+| My Tasks | Dashboard View (kanban-style by status) + List View (sortable/filterable table), for tasks assigned to this Super Admin. |
+| My Personal Space | Private Personal Tasks list, Scratchpad (notes editor), Interactive Whiteboard (freeform canvas). |
+| My File Hub | Personal file list (pin/favorite/rename/search/filter), sourced from files attached to this user's tasks. |
+| Spaces & Directories | Space list → click into a Space → its Lists → click into a List → its Tasks (full ClickUp-style drill-down). Create/Edit/Delete Space and List actions visible here. |
+| Channels / Group Chats | Channel list (joined + discoverable), channel view with real-time messages, members panel, create-channel action. |
+| Direct Messages | DM conversation list + 1:1 chat view, same messaging UI as channels. |
+| Workspace Settings *(Super Admin only — also add to sidebar)* | Workspace Name/Logo/Description editor, Member Management, Role Management, Pending Invitations list, Activity Logs viewer. |
+| Workspace Members *(add to sidebar, all roles see a version of it)* | Member Directory: profile cards, role, online status; Super Admin sees role-change controls and remove buttons here. |
+
+**ADMIN sidebar → screens:**
+
+Same screens as Super Admin for: Assign Tasks (Employees only),
+Unified Alerts, Track Progress (Admin View — Employee-focused metrics
+only), My Tasks, My Personal Space, My File Hub, Spaces & Directories
+(can create/edit/delete Spaces and Lists, cannot delete the
+Workspace), Channels, Direct Messages, Workspace Members (no
+role-change controls, can remove Employees only).
+
+Admin does **not** get a Workspace Settings sidebar item — clicking a
+direct URL to it must also 403 server-side, not just be hidden.
+
+**EMPLOYEE sidebar → screens:**
+
+| Sidebar Item | Screen(s) Behind It |
+|---|---|
+| Unified Alerts | Same notification feed as above. |
+| My Tasks | Same Dashboard/List views, scoped to tasks assigned to this Employee, plus a clearly visible "+ Self-Assign Task" action. |
+| My Personal Space | Same private Personal Tasks/Scratchpad/Whiteboard. |
+| My File Hub | Same personal file view. |
+| Spaces & Directories | Same drill-down browsing (Spaces → Lists → Tasks), but every create/edit/delete control for Spaces/Lists is absent from the DOM, not just disabled. |
+| Channels / Group Chats | Same chat UI; channel creation allowed; delete/archive/manage-members controls absent on channels not owned, and absent for delete/archive even on owned channels. |
+| Direct Messages | Same DM UI. |
+| Workspace Members | Read-only member directory — no role-change or remove controls render at all. |
+
+Employees never see "Assign Tasks", "Track Progress", or "Workspace
+Settings" anywhere, including in URL-typed deep links (server returns
+403, frontend route guard redirects to "My Tasks").
+
+### 5A.6 Core ClickUp-style task interaction (build all of these views)
+
+**Note on visibility vs. the "My Tasks" filter:** "My Tasks" (5A.5) is
+a deliberate personal filter (`assignedTo = currentUser`) that every
+role has — it does not contradict the Task Visibility Implementation
+Requirement above. The unfiltered, workspace-wide task browser lives
+under "Spaces & Directories" below, where every member sees every
+task in the workspace regardless of assignee, per that requirement.
+
+For Spaces & Directories and My Tasks alike, implement the same
+underlying task views ClickUp is known for, since "all things in
+ClickUp" specifically means:
+
+- **List View** — a sortable, filterable table of tasks (Status,
+  Priority, Assignee, Due Date columns at minimum).
+- **Board/Dashboard View** — kanban-style columns by Status (To Do /
+  In Progress / In Review / Done), drag-to-change-status, with the
+  automatic progress-percentage mapping from the Task Data Model.
+- **Task Detail panel/modal** — opens on clicking any task; contains
+  title, description, status, priority, due date, assignee, attachments,
+  and the full comment thread with @mentions.
+- **Create Task modal** — accessible from List View, Board View, and
+  the global "+ Create" action; respects Task Assignment Validation
+  Rules (the assignee dropdown only ever offers people the current
+  role is allowed to assign to).
+- **Space view** — shows the Lists inside it; Admin/Super Admin see
+  "+ New List" and per-list edit/delete; Employees see the same Lists
+  without those controls.
+
+### 5A.7 Chat (build once, reuse for channels and DMs)
+
+- **Channel/DM list panel** — unread badges, last-message preview,
+  online-status dot per DM contact.
+- **Conversation view** — message thread, composer with file-attach
+  (MinIO) and @mention autocomplete, reactions, pinned messages panel,
+  search-within-conversation.
+- **Create Channel modal** — name, description; creator is
+  automatically the channel's `adminIds` owner-of-record per Channel
+  Ownership.
+- **Channel settings panel** — name/description editable by
+  creator-or-Admin/Super-Admin; member management and
+  delete/archive controls rendered only for Admin/Super Admin (and
+  never for the Employee creator, per Channel Ownership Restrictions).
+
+### 5A.8 Notifications & Activity Log screens
+
+- **Unified Alerts feed** — reverse-chronological, paginated, grouped
+  by day, with type icons (task, mention, chat, invitation, role
+  change), unread/read visual distinction, "mark all as read."
+- **Activity Logs viewer** (Super Admin + Admin, inside Workspace
+  Settings) — paginated, searchable, filterable table (Event Type,
+  User, Date Range per Sorting and Filtering standards), showing actor,
+  action, target entity, and timestamp for every logged event in
+  Section 5's Workspace Activity Logs list.
+
+### 5A.9 "No patches" completeness rule
+
+Before considering the build done, walk every sidebar item for every
+one of the three roles and confirm:
+
+1. The item renders only for roles permitted to see it (5A.5 table).
+2. Clicking it loads a real, data-backed screen — never an empty
+   placeholder, "Coming Soon" notice, or console-only stub.
+3. Every action button visible on that screen (create / edit / delete
+   / assign / invite / promote / remove) is wired to a real backend
+   endpoint that enforces the matching rule from Section 5 — not just
+   a frontend `onClick` with no request behind it.
+4. Every list/table screen has working pagination, sorting, and
+   filtering per the System-Wide Implementation Standards in Section 5,
+   not just a flat unpaginated array for demo purposes.
+
+If any of the four checks above fails for any screen, that screen is
+not done — keep iterating on it before moving to the next module in
+the Build Sequencing Guidance (Section 7).
+
+---
+
+## 5B. CLICKUP FEATURE-PARITY CHECKLIST
+
+This checklist maps WaveWork's required features directly onto the
+ClickUp concepts they mirror, so nothing from the "ClickUp clone"
+expectation is accidentally left out. Every row must be implemented.
+
+| ClickUp Concept | WaveWork Equivalent | Status Required |
+|---|---|---|
+| Workspace | Workspace | ✅ Single workspace per deployment (Section 5) |
+| Spaces | Spaces | ✅ Visible to all, managed by Admin/Super Admin |
+| Folders/Lists | Lists | ✅ Managed by Admin/Super Admin |
+| Tasks | Tasks | ✅ Full data model, statuses, priority, due date |
+| Subtask-style comments/threads | Task Comments | ✅ With @mentions and file attachments |
+| Custom statuses with % complete | To Do/In Progress/In Review/Done at 25/50/75/100% | ✅ Fixed 4-stage model per spec |
+| List View | List View | ✅ Sortable/filterable table |
+| Board View | Board/Dashboard View | ✅ Kanban by status |
+| Task assignees | Assigned To | ✅ With role-based assignment validation |
+| @mentions | Mentions (tasks, comments, chat) | ✅ Trigger notifications |
+| File attachments | Attachments + File Hub | ✅ Via MinIO, aggregated personally |
+| Notifications | Unified Alerts | ✅ Real-time, read-state tracked |
+| Chat / Channels | Channels / Group Chats | ✅ Plus Direct Messages |
+| Activity/Audit history | Workspace Activity Logs | ✅ Indefinite retention |
+| Team/People directory | Member Directory | ✅ Role-aware controls |
+| Roles & permissions | Super Admin / Admin / Employee | ✅ Enforced frontend + backend |
+| Workspace-level settings | Workspace Settings | ✅ Super Admin only |
+| Personal/private space | My Personal Space | ✅ Tasks + Scratchpad + Whiteboard |
+| Dashboards/reporting | Track Progress dashboards | ✅ Role-scoped metrics |
+| Soft-deletable structure (Trash) | Soft Delete Policy | ✅ Spaces/Lists/Tasks/Channels recoverable |
+
+Items intentionally **out of scope** for this version (do not build
+these — they are explicitly deferred per the Scalability Requirement
+in Section 5, not part of "100% complete" for this release):
+multi-workspace switching, Calendar view, Gantt/timeline view, time
+tracking, sprints/goals, automation rules, and AI features. These are
+named in Section 5 only as things the architecture must not *block*
+later — they are not part of this build's done-criteria.
+
+---
+
+## 5C. DATA MODEL & SOCKET CONTRACT FOR SPACES AND CHAT
+### (HIGH-RISK AREAS — IMPLEMENT WITH EXTRA CARE)
+
+Spaces are the structural heart of the product (the entire task
+hierarchy hangs off them) and chat is the most concurrency-sensitive
+subsystem (it's the one thing that must work correctly under load with
+multiple backend replicas). Both get a concrete schema and contract
+here so neither is left to improvisation.
+
+### 5C.1 Spaces — concrete Prisma shape
+
+```prisma
+model Space {
+  id          String    @id @default(uuid())
+  workspaceId String
+  name        String
+  description String    @default("")
+  icon        String    @default("")
+  color       String    @default("#6366F1")
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  deletedById String?
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  createdBy   User      @relation(fields: [createdById], references: [id])
+  lists       List[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, deletedAt])
+}
+
+model List {
+  id          String    @id @default(uuid())
+  workspaceId String
+  spaceId     String
+  name        String
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  deletedById String?
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  space       Space     @relation(fields: [spaceId], references: [id])
+  createdBy   User      @relation(fields: [createdById], references: [id])
+  tasks       Task[]
+
+  @@index([workspaceId])
+  @@index([spaceId, deletedAt])
+}
+```
+
+**Cascade-on-soft-delete rule:** soft-deleting a Space does not
+cascade-delete its Lists or Tasks in the database (no destructive
+cascade). Instead, the read layer must treat a List/Task as
+inaccessible if its *parent* Space (or List) has `deletedAt != null`,
+even if the child row itself is still active. Implement this as a join
+condition in the query layer (`WHERE space.deletedAt IS NULL`), not as
+a denormalized flag copied onto every child row, to avoid drift if a
+Space is ever restored.
+
+**Space → List → Task fetch pattern:** the "Spaces & Directories"
+drill-down screen (5A.5/5A.6) should be backed by three distinct,
+separately-paginated endpoints — `GET /spaces`, `GET /spaces/:id/lists`,
+`GET /lists/:id/tasks` — not one deeply-nested response. This keeps
+each level independently cacheable and keeps payloads small as the
+workspace grows.
+
+### 5C.2 Chat — concrete Prisma shape (one model, two modes)
+
+Per the Chat System Model's "build once, reuse" rule, Channels and
+Direct Messages share one underlying `Conversation` + `Message` schema,
+distinguished only by a `type` field:
+
+```prisma
+model Conversation {
+  id          String    @id @default(uuid())
+  workspaceId String
+  type        String    // "CHANNEL" | "DIRECT"
+  name        String?   // null for DIRECT conversations
+  description String    @default("")
+  createdById String     // the channel creator / DM initiator
+  isArchived  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  deletedById String?
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  members     ConversationMember[]
+  messages    Message[]
+
+  @@index([workspaceId, type])
+}
+
+model ConversationMember {
+  id             String   @id @default(uuid())
+  conversationId String
+  userId         String
+  role           String   @default("MEMBER") // "OWNER" | "ADMIN" | "MEMBER" — channel-scoped, distinct from workspace role
+  joinedAt       DateTime @default(now())
+  lastReadAt     DateTime?
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  conversationId String
+  senderId       String
+  body           String
+  attachmentKeys String[]  @default([]) // MinIO object keys
+  mentionedUserIds String[] @default([])
+  pinnedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id])
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  sender         User         @relation(fields: [senderId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([workspaceId])
+}
+```
+
+**Why one model, not two:** a `ConversationMember.role` of `OWNER`
+captures "channel creator" distinctly from the user's *workspace* role
+(`SUPER_ADMIN`/`ADMIN`/`EMPLOYEE`). Channel Ownership Restrictions
+(Section 5) are then enforced by checking *both*: the workspace role
+(for delete/archive/manage-permissions, always gated to
+`SUPER_ADMIN`/`ADMIN`) and the conversation-level `OWNER` role (for
+rename/description, allowed to the creator regardless of workspace
+role). For `type = "DIRECT"`, there are always exactly 2
+`ConversationMember` rows and no channel-management actions apply at
+all — the permission checks for delete/archive/manage-members
+short-circuit to "not applicable" rather than running.
+
+### 5C.3 Socket.io — the event contract (this must be strong, not improvised)
+
+**Connection lifecycle:**
+
+1. Client connects with the JWT access token (sent via the Socket.io
+   `auth` payload, not a query string, to avoid leaking it into proxy
+   logs).
+2. Server validates the token in a Socket.io middleware
+   (`io.use(...)`) **before** allowing the connection to proceed —
+   an invalid/expired token must reject the connection at handshake,
+   not after.
+3. On successful connection, the server automatically joins the socket
+   to exactly one workspace room: `workspace:{workspaceId}` (derived
+   from the verified token, never from client-supplied data).
+4. The server additionally joins the socket to one room per
+   conversation the user is a member of:
+   `conversation:{conversationId}`, computed server-side from
+   `ConversationMember` rows at connect time. The client never tells
+   the server which conversation rooms to join.
+5. On disconnect, the presence service (5C.4) marks the user offline
+   after a grace period (do not flip to "offline" instantly on a
+   single dropped connection — a page refresh or brief network blip
+   shouldn't flicker presence; use a 10–15 second grace window before
+   marking offline).
+
+**Event catalogue (server → client), all scoped to a room per the
+naming convention in 6.3:**
+
+| Event | Room | Payload | Trigger |
+|---|---|---|---|
+| `message:new` | `conversation:{id}` | full Message + sender summary | New message sent (channel or DM) |
+| `message:deleted` | `conversation:{id}` | `{ messageId }` | Soft-delete of a message |
+| `message:reaction` | `conversation:{id}` | `{ messageId, emoji, userId, action: 'add'\|'remove' }` | Reaction toggle |
+| `conversation:typing` | `conversation:{id}` | `{ userId, isTyping }` | Typing indicator (ephemeral, not persisted) |
+| `conversation:memberAdded` | `conversation:{id}` | `{ conversationId, userId }` | Added to a channel |
+| `conversation:created` | `workspace:{id}` | conversation summary | New channel created (so the discoverable list updates live) |
+| `task:created` / `task:updated` / `task:statusChanged` | `workspace:{id}` | full Task | Any task mutation |
+| `notification:new` | `user:{userId}` *(see below)* | full Notification | Any action that generates a Unified Alert |
+| `presence:update` | `workspace:{id}` | `{ userId, status: 'online'\|'offline' }` | Presence change (5C.4) |
+| `member:roleChanged` | `workspace:{id}` | `{ userId, previousRole, newRole }` | Role promotion/demotion |
+
+**Personal, per-user delivery:** notifications are the one event type
+that must NOT broadcast to the whole workspace room — a Unified Alert
+is private to its recipient. Maintain a per-user room
+(`user:{userId}`, joined automatically at connect, same pattern as the
+workspace room) and emit `notification:new` only to that room, never
+to `workspace:{id}`. This is a common mistake worth calling out
+explicitly: broadcasting notifications workspace-wide would leak the
+existence/content of one person's alert to everyone online.
+
+**Client → server events (the only ones the client may emit):**
+
+| Event | Payload | Server-side validation required |
+|---|---|---|
+| `message:send` | `{ conversationId, body, attachmentKeys? }` | Caller must be a `ConversationMember` of `conversationId`; message is persisted via the REST-equivalent service function (not duplicated logic) before the `message:new` broadcast fires |
+| `conversation:typing` | `{ conversationId, isTyping }` | Caller must be a member; never persisted, fire-and-forget |
+| `presence:heartbeat` | `{}` | Refreshes the Redis presence TTL (5C.4); no broadcast on every heartbeat, only on actual state transitions |
+
+**Critical rule:** every socket-emitted mutation (`message:send` being
+the main one) must run through the *exact same* service-layer function
+used by the equivalent REST endpoint — never duplicate the permission
+check or the database write between the REST controller and the socket
+handler. The socket handler is a thin wrapper that calls
+`messageService.createMessage(...)` and then emits; it does not
+reimplement validation inline. This guarantees the API Authorization
+Standard (Section 5) applies identically whether a message arrives via
+REST or via socket.
+
+### 5C.4 Presence — concrete Redis shape
+
+```
+SET presence:{userId} "online" EX 20      // refreshed every ~10s by presence:heartbeat
+```
+
+- A user is "online" if `presence:{userId}` exists in Redis; "offline"
+  otherwise (key expiry handles the disconnect-without-clean-close
+  case automatically — no separate cleanup job needed).
+- On every heartbeat, only emit `presence:update` if the state actually
+  *changed* (i.e. the key didn't exist before this `SET`) — re-emitting
+  on every single heartbeat to the whole workspace room at scale is
+  exactly the kind of thing that makes "the socket layer weak" under
+  load; emit on transitions only.
+- Because this lives in Redis (not in-process memory), presence is
+  correct across however many backend replicas are running — any
+  replica can answer "is this user online" by checking the same key.
+
+### 5C.5 Horizontal scaling verification for chat specifically
+
+Beyond the general Redis-adapter requirement in Section 4.3, the build
+is not done for chat until this is demonstrated, not just configured:
+
+1. Run at least 2 backend container replicas behind Nginx.
+2. Connect Client A to replica 1 and Client B to replica 2 (achievable
+   in local testing by exposing each replica on a different port and
+   pointing each client at a different one directly, bypassing the
+   load balancer for the test).
+3. Send a message from Client A in a channel both are members of.
+4. Confirm Client B receives `message:new` in real time despite being
+   connected to a different Node process — this is what proves the
+   Redis adapter is actually wired correctly, as opposed to merely
+   present in `package.json`.
+
+---
+
+## 5D. COMPLETE BACKEND FILE CONTENTS (NO FILE IS JUST A NAME)
+
+Section 3 lists backend files by name. This section says exactly what
+goes inside the highest-risk ones, so nothing is left as an empty
+shell with a filename and nothing else. Every controller and service
+below must contain the listed responsibilities — at minimum — before
+that file is considered done.
+
+### 5D.1 Complete Prisma schema (every model, not just Space/Chat)
+
+5C.1 and 5C.2 already gave the exact shape for `Space`, `List`,
+`Conversation`, `ConversationMember`, and `Message`. The remaining
+models, to the same standard:
+
+```prisma
+model Workspace {
+  id          String    @id @default(uuid())
+  name        String
+  description String    @default("")
+  logoUrl     String    @default("")
+  ownerId     String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  deletedById String?
+
+  members     Membership[]
+  spaces      Space[]
+  conversations Conversation[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  avatarUrl    String   @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships  Membership[]
+}
+
+model Membership {
+  id          String   @id @default(uuid())
+  userId      String
+  workspaceId String
+  role        String   // "SUPER_ADMIN" | "ADMIN" | "EMPLOYEE"
+  joinedAt    DateTime @default(now())
+
+  user        User      @relation(fields: [userId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId, role])
+}
+
+model Invitation {
+  id          String   @id @default(uuid())
+  workspaceId String
+  email       String
+  role        String
+  createdById String
+  status      String   @default("PENDING") // PENDING | ACCEPTED | EXPIRED | REJECTED
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId, status])
+  @@index([email])
+}
+
+model Task {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  spaceId        String
+  listId         String
+  title          String
+  description    String    @default("")
+  status         String    @default("TODO") // TODO | IN_PROGRESS | IN_REVIEW | DONE
+  priority       String    @default("NORMAL")
+  dueDate        DateTime?
+  createdById    String
+  assignedToId   String?
+  assignmentType String    @default("MANAGER_ASSIGNED") // MANAGER_ASSIGNED | SELF_ASSIGNED
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+  deletedById    String?
+
+  workspace      Workspace @relation(fields: [workspaceId], references: [id])
+  space          Space     @relation(fields: [spaceId], references: [id])
+  list           List      @relation(fields: [listId], references: [id])
+  comments       Comment[]
+  attachments    Attachment[]
+
+  @@index([workspaceId])
+  @@index([listId, deletedAt])
+  @@index([assignedToId])
+  @@index([workspaceId, status])
+}
+
+model Comment {
+  id          String   @id @default(uuid())
+  workspaceId String
+  taskId      String
+  authorId    String
+  message     String
+  mentionedUserIds String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  task        Task     @relation(fields: [taskId], references: [id])
+
+  @@index([taskId])
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  taskId       String?
+  conversationId String?
+  uploadedById String
+  objectKey    String   // MinIO key
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+
+  task         Task?    @relation(fields: [taskId], references: [id])
+
+  @@index([workspaceId])
+  @@index([uploadedById])
+}
+
+model Notification {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  recipientId  String
+  type         String   // e.g. TASK_ASSIGNED, MENTION, ROLE_CHANGED ...
+  payload      Json
+  isRead       Boolean  @default(false)
+  readAt       DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([recipientId, isRead])
+  @@index([workspaceId])
+}
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  workspaceId String
+  actorId     String
+  eventType   String
+  targetType  String   // "TASK" | "SPACE" | "LIST" | "CHANNEL" | "MEMBER" | ...
+  targetId    String
+  metadata    Json      @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([targetType, targetId])
+}
+
+model PersonalTask {
+  id        String    @id @default(uuid())
+  userId    String
+  title     String
+  status    String    @default("TODO")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId, deletedAt])
+}
+
+model ScratchpadNote {
+  id        String   @id @default(uuid())
+  userId    String
+  content   String   @default("")
+  updatedAt DateTime @updatedAt
+}
+```
+
+`User.memberships` (a `Membership` row per workspace) is what carries
+the role — never store `role` directly on `User`, since the schema
+must stay forward-compatible with multi-workspace support per the
+Scalability Requirement, even though only one `Membership` per user
+exists in this version's actual usage.
+
+### 5D.2 Controller layer — exact responsibilities per file
+
+A controller's job, in every file below, is **only**: parse/validate
+the request (via the matching Zod validator), call exactly one service
+function, and shape the response into the standard envelope (6.2). A
+controller must never contain a Prisma query directly — that always
+belongs in the service layer.
+
+| Controller file | Must implement |
+|---|---|
+| `auth.controller.js` | `signup`, `login`, `refreshToken`, `logout`. Sets/clears the httpOnly JWT cookies; never returns the raw password hash in any response. |
+| `workspace.controller.js` | `createWorkspace`, `getWorkspaceSettings`, `updateWorkspaceSettings`, `deleteWorkspace` (soft delete). Every mutating action here requires `requireRole('SUPER_ADMIN')` from the middleware. |
+| `invitation.controller.js` | `createInvitation`, `listPendingInvitations`, `acceptInvitation`. `createInvitation` must reject role=`SUPER_ADMIN`/`ADMIN` requests from a caller whose own role is `ADMIN` (Super-Admin-only invite targets), returning 403 before reaching the service. |
+| `space.controller.js` | `createSpace`, `listSpaces`, `getSpace`, `updateSpace`, `deleteSpace` (soft). Create/update/delete gated to `SUPER_ADMIN`/`ADMIN`; `listSpaces`/`getSpace` open to all workspace members (no role gate at all — see Task/Space Visibility Implementation Requirement, same principle applies to Spaces). |
+| `list.controller.js` | `createList`, `listListsForSpace`, `updateList`, `deleteList` (soft). Same read-open / write-gated pattern as spaces. |
+| `task.controller.js` | `createTask`, `listTasks` (workspace-scoped, paginated, filterable per Sorting/Filtering standards), `getTask`, `updateTask`, `updateTaskStatus`, `deleteTask` (soft), `selfAssignTask`. `updateTask`/`deleteTask` must check resource ownership (caller is assignee, or caller is `ADMIN`/`SUPER_ADMIN`) inside the controller before calling the service, returning 403 on failure with the exact message pattern from 6.2's error example. |
+| `comment.controller.js` | `addComment`, `listCommentsForTask`. Parses `@mentions` out of the message body server-side (do not trust a client-supplied mentioned-user list) and passes the resolved user IDs to the service so notifications fire correctly. |
+| `channel.controller.js` | `createChannel`, `listChannels` (joined + discoverable, per 5A.5), `getChannel`, `updateChannelSettings`, `deleteChannel`, `archiveChannel`, `addMember`, `removeMember`. `updateChannelSettings` must branch: name/description changes allowed for the conversation's `OWNER`-role member OR workspace `ADMIN`/`SUPER_ADMIN`; `adminIds`/`memberIds` changes allowed ONLY for workspace `ADMIN`/`SUPER_ADMIN` regardless of conversation ownership (per Channel Ownership Restrictions). |
+| `message.controller.js` | `sendMessage`, `listMessagesForConversation` (cursor-paginated), `deleteMessage`, `toggleReaction`, `pinMessage`. `sendMessage` must call the exact same `messageService.createMessage(...)` function the `message:send` socket handler calls (5C.3) — there is exactly one code path for message creation, entered from either REST or socket. |
+| `notification.controller.js` | `listNotifications` (paginated, per-user), `markAsRead`, `markAllAsRead`. Always scoped to `recipientId = currentUser.id` — never accepts a recipient ID from the request. |
+| `activityLog.controller.js` | `listActivityLogs` (paginated, filterable by Event Type / User / Date Range). Gated to `ADMIN`/`SUPER_ADMIN`; read-only, no write endpoints exposed (logs are only ever created internally by other services, never via a direct API call). |
+| `member.controller.js` | `listMembers`, `changeRole`, `removeMember`, `transferOwnership`. `changeRole`/`removeMember`/`transferOwnership` must call the Last-Super-Admin-Protection check (5C/Section 5) inside the service before committing, and must reject if the target would leave the workspace with zero Super Admins. |
+| `fileHub.controller.js` | `listMyFiles`, `pinFile`, `favoriteFile`, `renameFileLabel`. All scoped to `uploadedById = currentUser.id` joined against `Attachment` rows tied to tasks assigned to them — this controller never writes to the underlying `Attachment` row's `objectKey`/`taskId`, only to a personal-label/pin/favorite overlay (so the "must not duplicate the file" rule in File Ownership Model holds structurally, not just by convention). |
+| `personalSpace.controller.js` | `listPersonalTasks`, `createPersonalTask`, `updatePersonalTask`, `getScratchpad`, `updateScratchpad`. Every query here filters by `userId = currentUser.id` with no workspace-role branching at all — Personal Space has exactly one permission rule ("only the owner"), so this controller has no `requireRole` middleware, only `authenticate`. |
+
+### 5D.3 Service layer — exact responsibilities per file
+
+Services own all Prisma access, all `$transaction` blocks, all
+Activity Log writes, and all Socket.io emit calls triggered by a
+mutation. Controllers call services; services never call controllers.
+
+| Service file | Must implement |
+|---|---|
+| `auth.service.js` | Password hashing/verification (bcrypt), JWT signing/verification (delegates to `utils/tokens.js`), user lookup by email. |
+| `workspace.service.js` | `createWorkspace` — wraps Workspace row creation + Super Admin `Membership` row + Default Workspace Bootstrap (General Space/Getting Started List/#general Conversation) + `WORKSPACE_CREATED` Activity Log entry in one `$transaction` (Database Transaction Rules). |
+| `invitation.service.js` | `createInvitation` (writes the row, sends the email via `nodemailer`), `acceptInvitation` — wraps user creation (if needed) + `Membership` creation + Activity Log + notification to inviter in one `$transaction`; checks `expiresAt` and `status` before proceeding, rejecting expired/non-pending invitations. |
+| `space.service.js` / `list.service.js` | Standard CRUD against `Space`/`List`, always writing `deletedAt`/`deletedById` instead of a real delete, always emitting the matching Activity Log entry on create/update/delete. |
+| `task.service.js` | CRUD against `Task`. `updateTaskStatus` enforces the Task Status Validation transition table — reject any transition not in `{TODO→IN_PROGRESS, IN_PROGRESS→IN_REVIEW, IN_REVIEW→DONE}` unless the caller is `ADMIN`/`SUPER_ADMIN` (manager override). Emits `task:created`/`task:statusChanged` socket events (5C.3) and writes the matching Activity Log entry. |
+| `taskAssignment.service.js` | Isolated specifically to hold the Task Assignment Validation Rules matrix (who can assign to whom) — kept separate from `task.service.js` so this one permission matrix has a single, easily-audited file rather than being buried inside general task CRUD. |
+| `selfAssignment.service.js` | `selfAssignTask` — sets `assignmentType = SELF_ASSIGNED`, `createdById = assignedToId = currentUser.id`, and immediately notifies every `ADMIN`/`SUPER_ADMIN` `Membership` in the workspace (queries `Membership` for those roles, fans out a `Notification` row per recipient). |
+| `comment.service.js` | Persists `Comment`, resolves `mentionedUserIds` into `Notification` rows, emits the comment-added socket event. |
+| `channel.service.js` | CRUD against `Conversation`/`ConversationMember` for `type = "CHANNEL"`. Creating a channel auto-inserts the creator as a `ConversationMember` with `role = "OWNER"`. |
+| `message.service.js` | `createMessage` — the single shared function called by both the REST controller and the chat socket handler (5C.3); persists `Message`, resolves mentions, and returns the full message object for the caller to broadcast. Does not itself call `io.emit` — that's the caller's job, keeping this function equally usable from a context that has no socket (e.g. a future bot/webhook). |
+| `notification.service.js` | `createNotification` (used internally by every other service that needs to notify someone), `markAsRead`/`markAllAsRead`. Every `createNotification` call also triggers the `notification:new` socket emit to `user:{recipientId}` (5C.3) — this is the one centralized place that combines "write the row" and "emit the event" so no other service has to remember to do both. |
+| `activityLog.service.js` | `logActivity(actorId, workspaceId, eventType, targetType, targetId, metadata)` — the single function every other service calls to write an `ActivityLog` row. No other file writes to that table directly. |
+| `member.service.js` / `roleChange.service.js` | `member.service.js` handles listing/removal; `roleChange.service.js` isolates promote/demote/transfer-ownership specifically, each wrapped in a `$transaction` with the Last Super Admin Protection check run inside the same transaction (not as a separate pre-check, to avoid a race between the check and the write). |
+| `fileHub.service.js` | Reads `Attachment` rows joined to the user's personal pin/favorite/label overlay table; never mutates the underlying `Attachment` row. |
+| `softDelete.service.js` | One shared helper (`softDelete(model, id, deletedById)`) used by every other service's delete operations, so the soft-delete write pattern (`deletedAt`/`deletedById`) is implemented in exactly one place rather than copy-pasted across `space.service.js`, `list.service.js`, `task.service.js`, and `channel.service.js` independently. |
+| `personalSpace.service.js` | CRUD against `PersonalTask`/`ScratchpadNote`, always filtered by `userId`, no workspace/role parameters accepted at all. |
+
+### 5D.4 What "models folder" means in this stack
+
+There is intentionally no separate `models/` folder in the backend —
+Prisma's `schema.prisma` (5D.1) **is** the model layer; `prisma generate`
+produces the typed client that services import directly
+(`const { PrismaClient } = require('@prisma/client')`). Do not create
+a parallel hand-written model layer on top of Prisma — that would be
+the "second system" the Real-Time Event System rule explicitly warns
+against, applied to data modeling instead of sockets. If a model needs
+a computed/derived helper (e.g. "is this the workspace's last Super
+Admin"), that logic lives in the relevant service file (`roleChange.service.js`
+for that example), not in a models layer.
+
+---
+
+## 6. CROSS-CUTTING ENGINEERING STANDARDS
+
+These supplement Section 5 and apply to every feature built.
+
+### 6.1 Security
+- Hash all passwords with bcrypt (cost factor 12+).
+- Issue short-lived JWT access tokens (15 min) + longer-lived refresh
+  tokens (7 days) stored in httpOnly, secure, sameSite cookies.
+- Apply `helmet` for HTTP security headers.
+- Apply CORS with an explicit allow-list (no wildcard origins in
+  production).
+- Sanitize all user input before storing or rendering (prevent XSS in
+  chat messages, comments, task descriptions).
+- Validate every request body server-side with Zod, even for fields
+  the frontend already validates.
+- Never trust a role or workspace ID sent from the client — always
+  re-derive the caller's role and workspace from the authenticated
+  session/JWT on the server.
+
+### 6.2 API response shape
+Every API response must follow one consistent envelope, matching the
+Error Handling Standard in Section 5:
+
+```json
+// Success
+{ "success": true, "message": "Task created", "data": { ... } }
+
+// Failure
+{ "success": false, "errorCode": "FORBIDDEN_ROLE", "errorMessage": "Only Admins and Super Admins can create spaces." }
+```
+
+### 6.3 Real-time event naming convention
+Use a consistent `domain:action` naming scheme for Socket.io events,
+for example: `task:created`, `task:statusChanged`, `message:sent`,
+`notification:new`, `member:roleChanged`, `presence:update`. Document
+every event name and payload shape in a shared constants file used by
+both frontend and backend (mirror the constant values manually since
+the backend is JS and frontend is TS).
+
+### 6.4 Frontend permission helpers
+Build a single `usePermissions()` hook on the frontend that exposes
+boolean checks (e.g. `canManageSpaces`, `canAssignTasks`,
+`canAccessWorkspaceSettings`) derived from the current user's role.
+Every UI gate in the app should call this hook — never inline a raw
+`role === 'ADMIN'` check scattered across components.
+
+### 6.5 Backend permission helpers
+Mirror this on the backend with a single `requireRole(...)` middleware
+factory and a `permissions.js` utility module containing the same
+logical checks, so the business rules in Section 5 are implemented in
+exactly one place and reused by every controller.
+
+---
+
+## 7. PHASED BUILD PLAN (HAND ONE PHASE AT A TIME TO THE CODING AGENT)
+
+Each phase below is **self-contained**: it restates its own scope,
+points to the exact sections of this document that govern it, and
+ends with its own acceptance checklist. Give the coding agent one
+phase at a time — do not start Phase N+1 until Phase N's checklist is
+fully green. This keeps every handoff small enough to verify in a
+single sitting, which matters for a one-week build.
+
+Every phase inherits, unconditionally, regardless of which phase is
+currently active:
+- The Critical Implementation Rules, Permission Conflict Resolution
+  Rules, Database Transaction Rules, and API Authorization Standard
+  (all in Section 5).
+- The UI Design System (Section 2A) — every screen built in any phase
+  follows it exactly, with no phase allowed to introduce a one-off
+  style.
+- The Mandatory Tech Stack and Folder Structure (Sections 2–3).
+
+---
+
+### PHASE 1 — Foundation: Auth, Workspace, Roles, Sidebar Shell
+
+**Scope:** everything needed for a Super Admin to sign up, create a
+workspace, and see the correct empty-state sidebar shell. No Spaces,
+Tasks, or Chat yet — this phase proves the skeleton works end to end.
+
+**Build:**
+- Prisma: `User`, `Workspace`, `Membership` models (5D.1).
+- Backend: `auth.controller.js`/`auth.service.js`,
+  `workspace.controller.js`/`workspace.service.js` — `createWorkspace`
+  only for now (5D.2/5D.3). JWT issuance, httpOnly cookies, bcrypt
+  hashing (6.1).
+- Default Workspace Bootstrap on creation (Section 5) — at this phase,
+  bootstrap can create placeholder/empty `General` Space and
+  `#general` Conversation rows even though Spaces/Chat features aren't
+  built yet; this proves the transaction pattern (Database
+  Transaction Rules) early.
+- Frontend: Landing/Splash, Sign Up, Log In, Create Workspace screens
+  (5A.1–5A.2), the persistent app shell with sidebar + top bar (5A.4),
+  and `usePermissions()` (6.4) returning correct booleans for a
+  `SUPER_ADMIN`.
+- Sidebar renders the full Super Admin item list (5A.5) — items can
+  link to empty/"coming in Phase X" placeholder routes for now, **except**
+  this is the one explicitly-allowed exception to the "no stub
+  screens" rule (5A.9), since later phases fill them in; do not ship
+  this exception past Phase 1.
+
+**Phase 1 acceptance checklist:**
+- [ ] Sign up → create workspace → land in app shell works end to end.
+- [ ] Creator's `Membership.role` is `SUPER_ADMIN`.
+- [ ] JWT cookies are httpOnly/secure/sameSite; refresh flow works.
+- [ ] Sidebar matches the Super Admin list in 5A.5 exactly, styled per
+      Section 2A (correct icon set, spacing, button style).
+- [ ] Workspace creation is atomic — killing the process mid-creation
+      (simulate by throwing inside the `$transaction`) leaves no
+      partial `Workspace` row.
+
+---
+
+### PHASE 2 — Spaces & Lists (the structural heart)
+
+**Scope:** Spaces are the organizing core of the whole product — get
+this exactly right before anything depends on it. All three roles
+must be able to see this correctly; only Admin/Super Admin manage it.
+
+**Build:**
+- Prisma: `Space`, `List` models exactly as specified in 5C.1,
+  including the index set.
+- Backend: `space.controller.js`/`service.js`,
+  `list.controller.js`/`service.js` per 5D.2/5D.3 — full CRUD, soft
+  delete via the shared `softDelete.service.js` helper.
+- Enforce Space Visibility Model + Space Access Model + Space
+  Management Model (Section 5) precisely: **every** role can read;
+  only `ADMIN`/`SUPER_ADMIN` can write. Verify with all three demo
+  roles, not just Super Admin.
+- Enforce the cascade-on-soft-delete rule (5C.1): soft-deleting a
+  Space must hide its Lists from every read path via a join condition,
+  never a destructive delete.
+- Frontend: "Spaces & Directories" sidebar screen — Space list → click
+  into a Space → its Lists (5A.5/5A.6), with Create/Edit/Delete
+  controls visible only for Admin/Super Admin, completely absent from
+  the DOM for Employees (not just disabled).
+- Invite an Employee test account (basic invitation flow can be a
+  simple direct-add for this phase if Phase 3 hasn't landed yet — full
+  invitation email flow is Phase 3's job) specifically to verify
+  Employee-side visibility.
+
+**Phase 2 acceptance checklist:**
+- [ ] All three roles (Super Admin, Admin, Employee test accounts) see
+      identical Space/List lists.
+- [ ] Only Admin/Super Admin see Create/Edit/Delete controls; an
+      Employee's DOM has zero such buttons (inspect, don't just visually
+      confirm).
+- [ ] Direct API call (e.g. via curl/Postman) to delete a Space as the
+      Employee test account returns 403.
+- [ ] Soft-deleting a Space hides its Lists from the UI without the
+      underlying rows being destroyed (verify in the database directly).
+- [ ] UI matches Section 2A — same table component, same modal shell,
+      same icon for "Spaces & Directories" as used in the Phase 1
+      sidebar.
+
+---
+
+### PHASE 3 — Invitations & Member Directory
+
+**Scope:** real email-based invitations, and the member list every
+later phase (task assignment, chat membership) will depend on.
+
+**Build:**
+- Prisma: `Invitation` model (5D.1).
+- Backend: `invitation.controller.js`/`service.js`,
+  `member.controller.js`/`service.js` per 5D.2/5D.3. Nodemailer wired
+  to a free SMTP provider (Section 2).
+- Full flow per 5A.3: Super Admin invites Admin/Employee, Admin
+  invites Employee-only (enforced server-side, not just hidden in the
+  UI), accept-invitation screen, atomic accept transaction.
+- Member Directory screen (Section 5, item 11) with role-aware
+  controls per role (5A.5's table).
+- Member Removal Rules and Last Super Admin Protection (Section 5) —
+  this is a good phase to build and test this safeguard early, since
+  Phase 9 (Role Management) will rely on it being correct already.
+
+**Phase 3 acceptance checklist:**
+- [ ] Invitation email actually arrives and the accept link works.
+- [ ] Admin attempting to invite someone as `ADMIN` or `SUPER_ADMIN`
+      is rejected server-side (test via direct API call, not just UI).
+- [ ] Expired invitation token is rejected with a clear error.
+- [ ] Attempting to remove/demote the sole Super Admin is blocked,
+      tested via direct API call.
+- [ ] Member Directory UI matches 2A's avatar/table component
+      standards.
+
+---
+
+### PHASE 4 — Tasks (full lifecycle)
+
+**Scope:** the single most important working surface in the product.
+Get visibility vs. modification exactly right (Task Visibility
+Implementation Requirement, Section 5) — this is the rule most likely
+to be silently violated by a default implementation.
+
+**Build:**
+- Prisma: `Task`, `Comment`, `Attachment` models (5D.1).
+- Backend: `task.controller.js`/`service.js`,
+  `taskAssignment.service.js`, `comment.controller.js`/`service.js`
+  per 5D.2/5D.3. MinIO upload wiring for attachments (Section 4.4).
+- Task Status Validation transition table enforced server-side, with
+  manager override for Admin/Super Admin (Section 5).
+- Task Assignment Validation Rules matrix enforced server-side.
+- **Explicitly verify the read/write split**: `GET /tasks` scoped only
+  by `workspaceId` (never by assignee) — confirm by logging in as an
+  Employee and seeing every other employee's tasks in the shared
+  browser, while a direct `PATCH` on someone else's task 403s.
+- Frontend: List View, Board/Dashboard View (kanban), Task Detail
+  modal, Create Task modal — all per 5A.6, sharing the one button/
+  modal/table components from 2A.
+
+**Phase 4 acceptance checklist:**
+- [ ] An Employee can see every task in the workspace in Spaces &
+      Directories, including tasks assigned to other Employees.
+- [ ] That same Employee gets a 403 on `PATCH`/`DELETE` for a task not
+      assigned to them, confirmed via direct API call.
+- [ ] Status transitions outside the valid chain are rejected for
+      non-managers; Admin/Super Admin override works.
+- [ ] File attachment uploads go through MinIO (confirm no file
+      lands on local disk).
+- [ ] Kanban drag-to-change-status updates progress percentage
+      automatically per the Task Data Model.
+
+---
+
+### PHASE 5 — Self-Assignment & My Tasks
+
+**Scope:** the one Employee-initiated task-creation path, plus the
+personal "My Tasks" filtered view every role uses daily.
+
+**Build:**
+- Backend: `selfAssignment.service.js` per 5D.3 — sets
+  `assignmentType = SELF_ASSIGNED`, notifies every Admin/Super Admin
+  Membership in the workspace.
+- Frontend: "+ Self-Assign Task" action (5A.5, Employee sidebar), My
+  Tasks Dashboard + List View for all three roles (Section 5, item 4),
+  using the `assignedTo = currentUser` filter explicitly distinguished
+  from the unfiltered Spaces & Directories browser (5A.6's note).
+- Verify Employees cannot delete/reassign their own self-assigned
+  tasks, per Self-Assignment Behavior (Section 5).
+
+**Phase 5 acceptance checklist:**
+- [ ] Employee can self-assign a task with zero manager involvement.
+- [ ] Every Admin and Super Admin in the workspace receives a
+      notification immediately on self-assignment.
+- [ ] Employee cannot delete or reassign their own self-assigned task
+      (verify via direct API call, not just UI).
+- [ ] My Tasks correctly filters to only the current user across all
+      three roles, while Spaces & Directories still shows everyone's.
+
+---
+
+### PHASE 6 — Real-Time Infrastructure (Socket.io + Redis)
+
+**Scope:** stand up the socket layer itself, fully, before chat
+features are built on top of it — this phase is infrastructure only,
+verified with a trivial event before Phase 7 builds real features on
+it.
+
+**Build:**
+- `config/socket.js`, `config/redis.js`, the full `sockets/` directory
+  (5C.3's connection lifecycle: JWT-validated handshake, automatic
+  `workspace:{id}` and `user:{id}` room joins).
+- Redis adapter wired per Section 4.3 — this is the literal point of
+  this phase.
+- Presence tracking per 5C.4 (Redis key with TTL, heartbeat, emit only
+  on state transitions).
+- Wire `task:created`/`task:statusChanged` events from Phase 4's task
+  service into this new socket layer as the first real proof the
+  infrastructure works (low-risk, already-correct business logic,
+  good test case for the transport layer).
+
+**Phase 6 acceptance checklist:**
+- [ ] Multi-replica verification from 5C.5 passes: a task update made
+      by a client connected to backend replica 1 is received in real
+      time by a client connected to replica 2.
+- [ ] An invalid/expired JWT is rejected at socket handshake, not
+      after connection.
+- [ ] Presence correctly reflects online/offline with the 10–15s grace
+      window (5C.4) — a page refresh doesn't flicker presence to
+      "offline."
+- [ ] A user never receives an event for a workspace they're not a
+      member of (test with two separate workspace/user pairs).
+
+---
+
+### PHASE 7 — Chat: Channels & Direct Messages
+
+**Scope:** the full chat system, built once and shared between
+channels and DMs per the Chat System Model (Section 5), on top of
+Phase 6's now-proven socket layer.
+
+**Build:**
+- Prisma: `Conversation`, `ConversationMember`, `Message` models
+  exactly per 5C.2.
+- Backend: `channel.controller.js`/`service.js`,
+  `message.controller.js`/`service.js` per 5D.2/5D.3. The full
+  client→server and server→client event catalogue from 5C.3.
+- Enforce Channel Ownership Restrictions precisely: workspace
+  `ADMIN`/`SUPER_ADMIN` can always delete/archive/manage-permissions;
+  the conversation `OWNER` (creator) can rename/edit description even
+  as an Employee, but never gets delete/archive/manage-permissions
+  even on their own channel.
+- Frontend: Channel/DM list panel, conversation view, Create Channel
+  modal, channel settings panel — all per 5A.7.
+- Critical check: confirm `message:send` (socket) and `POST /messages`
+  (REST) both call the exact same `messageService.createMessage(...)`
+  — no duplicated logic between the two entry points.
+
+**Phase 7 acceptance checklist:**
+- [ ] A channel created by an Employee can have its name/description
+      edited by that Employee, but delete/archive/manage-members
+      controls are absent from their UI and 403 on direct API call.
+- [ ] DMs and channels visibly share the same message UI component
+      (per 2A.3/2A.4) and the same underlying schema (spot-check the
+      database — one `Message` table, not two).
+- [ ] Typing indicators, reactions, mentions, and pinned messages all
+      work in both channels and DMs.
+- [ ] The multi-replica test from Phase 6 still passes with real chat
+      messages, not just the placeholder task event.
+- [ ] Notifications for mentions/new messages arrive only in the
+      mentioned/messaged user's personal `user:{id}` room — confirm a
+      third, uninvolved user does NOT receive them.
+
+---
+
+### PHASE 8 — Notifications, Activity Logs, File Hub
+
+**Scope:** the cross-cutting systems that every prior phase has been
+quietly feeding into — this phase makes them visible and complete.
+
+**Build:**
+- Prisma: `Notification`, `ActivityLog` models per 5D.1.
+- Backend: `notification.controller.js`/`service.js`,
+  `activityLog.controller.js`/`service.js`, `fileHub.controller.js`/
+  `service.js` per 5D.2/5D.3.
+- Audit every mutation built in Phases 1–7 and confirm each one that
+  should log to Activity Log actually does (Section 5's Workspace
+  Activity Logs event list is the checklist here).
+- Unified Alerts feed and Activity Logs viewer screens per 5A.8.
+- File Hub aggregation: files from Phase 4's task attachments
+  auto-appear per user, without duplication (File Ownership Model,
+  Section 5).
+
+**Phase 8 acceptance checklist:**
+- [ ] Every event type listed under Workspace Activity Logs in Section
+      5 has at least one real, triggerable example logged correctly.
+- [ ] Activity Logs viewer is visible to Admin/Super Admin only,
+      paginated, filterable by Event Type/User/Date Range.
+- [ ] Unified Alerts feed shows real-time updates for all alert types
+      listed in the Unified Alerts Module (Section 5).
+- [ ] A file attached to a task appears in the assignee's File Hub
+      without a second copy existing in MinIO.
+
+---
+
+### PHASE 9 — Workspace Settings, Role Management, Personal Space, Dashboards
+
+**Scope:** the remaining Super-Admin-only surfaces and the two
+analytics dashboards, built last since they read from everything else.
+
+**Build:**
+- `workspace.controller.js`'s settings endpoints (rest of 5D.2, beyond
+  Phase 1's `createWorkspace`), `roleChange.service.js`,
+  `personalSpace.controller.js`/`service.js` per 5D.2/5D.3.
+- Workspace Deletion Protection, full Role Change Rules including
+  Workspace Ownership Transfer (Section 5) — re-verify Last Super
+  Admin Protection here since promote/demote/transfer all funnel
+  through it.
+- My Personal Space (Section 5, item 5): Personal Tasks, Scratchpad,
+  Interactive Whiteboard — fully private, zero Admin/Super Admin
+  access at the API level, not just hidden in the UI.
+- Track Progress dashboards (Section 5, item 3) for Super Admin and
+  Admin views, built last because they aggregate Task/Member data from
+  every earlier phase.
+
+**Phase 9 acceptance checklist:**
+- [ ] Promote/demote/transfer-ownership all correctly block the
+      last-Super-Admin case (re-test even though Phase 3 covered
+      remove/demote — transfer-to-invalid-user is new here).
+- [ ] An Admin or Super Admin hitting a Personal Space API endpoint
+      for another user's data gets 403/404, not their data.
+- [ ] Both dashboard views show numbers that match a manual count in
+      the database for a test workspace.
+- [ ] Workspace deletion is soft (confirm the row still exists with
+      `deletedAt` set, not gone).
+
+---
+
+### PHASE 10 — Hardening & Production Readiness
+
+**Scope:** the pass that turns "feature-complete" into "production
+beast," per the scalability requirements throughout this document.
+
+**Build:**
+- Cursor-based pagination conversion everywhere offset pagination may
+  have crept in during earlier phases (Section 4.1).
+- Redis-backed rate limiting on auth + write-heavy endpoints (4.6).
+- Full security pass per 6.1 (helmet, CORS allow-list, input
+  sanitization, no stack traces leaking in API responses).
+- Docker Compose bring-up of the full stack (frontend, backend x2
+  replicas, Postgres, Redis, MinIO, Nginx) and a real multi-replica
+  load test.
+- Final pass against the "No Patches" Completeness Rule (5A.9) and the
+  ClickUp Feature-Parity Checklist (5B), screen by screen.
+
+**Phase 10 acceptance checklist:** the full Definition of Done in
+Section 8 below, in its entirety — every single box checked, not most.
+
+---
+
+## 8. DEFINITION OF DONE
+
+A feature or the application as a whole is not complete until:
+
+- [ ] Every permission rule in Section 5 is enforced server-side, not
+      just hidden in the UI.
+- [ ] Every entity listed in the Workspace Data Isolation Rules and
+      Entity Ownership Model carries a `workspaceId` and the correct
+      ownership fields, and every query filters by them.
+- [ ] Soft delete is implemented with nullable `deletedAt`/`deletedById`
+      and every "active records" read path filters it out.
+- [ ] The Last Super Admin Protection is implemented and tested (attempt
+      to demote/remove/transfer away the sole Super Admin and confirm
+      it's blocked).
+- [ ] Every mutating action that should produce an Activity Log entry
+      does so, with actor, workspace, and event type recorded.
+- [ ] All real-time events are scoped to `workspace:{workspaceId}`
+      Socket.io rooms — verified by confirming a user in one workspace
+      never receives an event from another.
+- [ ] File uploads go through MinIO, never local disk, and task/chat
+      attachments correctly populate the recipient's File Hub without
+      duplication.
+- [ ] API responses follow the consistent success/failure envelope
+      everywhere.
+- [ ] The app runs fully via `docker-compose up --build`, bringing up
+      frontend, backend, Postgres, Redis, and MinIO together.
+- [ ] Basic load testing confirms multiple concurrent Socket.io
+      connections and REST requests are served correctly across at
+      least 2 backend replicas behind the Nginx reverse proxy.
+- [ ] Every sidebar item for every role passes all four checks in the
+      "No Patches" Completeness Rule (Section 5A.9): correct
+      visibility, real data-backed screen, working backend-wired
+      actions, working pagination/sorting/filtering.
+- [ ] Every row in the ClickUp Feature-Parity Checklist (Section 5B)
+      is implemented and demonstrable end-to-end — from Super Admin
+      signup and workspace creation, through inviting an Admin and an
+      Employee, to that Employee using Tasks, Chat, and their Personal
+      Space.
+- [ ] No screen in the application is a placeholder, "Coming Soon"
+      notice, or otherwise non-functional stub.
+- [ ] The Space → List → Task cascade-on-soft-delete rule (5C.1) is
+      verified: soft-deleting a Space hides its Lists and Tasks from
+      every read path without destructively deleting the underlying
+      rows.
+- [ ] Channels and Direct Messages are confirmed to share one
+      `Conversation`/`Message` schema (5C.2), not two parallel
+      implementations.
+- [ ] The full Socket.io event catalogue in 5C.3 is implemented, with
+      every socket-emitted mutation routed through the same service
+      function as its REST equivalent — never a duplicated/divergent
+      permission check.
+- [ ] Notifications are confirmed to broadcast only to the recipient's
+      personal `user:{userId}` room, never to the workspace-wide room.
+- [ ] The multi-replica chat verification in 5C.5 has been performed
+      and a message sent by a client on one backend replica is
+      confirmed received in real time by a client on a different
+      replica.
+- [ ] Every Prisma model in 5D.1 exists in `schema.prisma` with the
+      listed fields and indexes; no controller file contains a direct
+      Prisma query (all database access lives in the service layer,
+      per 5D.2/5D.3); no hand-written `models/` layer was added beside
+      Prisma (5D.4).
+
+---
+
+*End of specification. This document is intended to be pasted in full
+into Google AI Studio (or an equivalent AI code-generation tool) as the
+complete build brief for WaveWork.*

@@ -5,7 +5,7 @@ const API_BASE = '/api';
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   // Read active user ID from session state (per-tab) first, then local state if switching
   const storedUserId = sessionStorage.getItem('activeUserId') || localStorage.getItem('activeUserId') || 'u-1';
-  
+
   const headers = new Headers(options.headers);
   headers.append('Content-Type', 'application/json');
   headers.append('X-Active-User-Id', storedUserId);
@@ -16,7 +16,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   };
 
   const response = await fetch(`${API_BASE}${endpoint}`, config);
-  
+
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
     throw new Error(errorBody.error || `HTTP error! Status: ${response.status}`);
@@ -38,11 +38,27 @@ export const api = {
       body: JSON.stringify({ userId }),
     });
   },
+  checkWorkspaceExists: () => request<{ workspaceExists: boolean }>('/auth/workspace-exists'),
+  getInvitationById: (id: string) => request<any>(`/auth/invitations/${id}`),
+  setupFirstWorkspace: (data: Record<string, any>) => request<{ success: boolean; user: User; token: string; workspaces: any[] }>('/auth/setup-first-workspace', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  createWorkspace: (data: Record<string, any>) => request<{ success: boolean; user: User; token: string; workspaces: any[] }>('/auth/create-workspace', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  switchWorkspace: (workspaceId: string) => request<{ success: boolean; user: User; token: string; workspaces: any[] }>('/auth/switch-workspace', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId }),
+  }),
   signup: (signupData: Record<string, any>) => request<{ success: boolean; user: User }>('/auth/signup', {
     method: 'POST',
     body: JSON.stringify(signupData),
   }),
-  login: (loginData: Record<string, any>) => request<{ success: boolean; user: User }>('/auth/login', {
+  login: (loginData: Record<string, any>) => request<{
+    token: string; success: boolean; user: User; workspaces?: any[]
+  }>('/auth/login', {
     method: 'POST',
     body: JSON.stringify(loginData),
   }),
@@ -54,6 +70,15 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(data),
   }),
+  promoteUser: (id: string) => request<{ success: boolean; user: User }>(`/users/${id}/promote`, { method: 'POST' }),
+  demoteUser: (id: string) => request<{ success: boolean; user: User }>(`/users/${id}/demote`, { method: 'POST' }),
+  updateUserRole: (id: string, role: string) => request<{ success: boolean; user: User }>(`/users/${id}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  }),
+  deactivateUser: (id: string) => request<{ success: boolean }>(`/users/${id}/deactivate`, { method: 'POST' }),
+  deleteUser: (id: string) => request<{ success: boolean }>(`/users/${id}`, { method: 'DELETE' }),
+
 
   // Spaces
   getSpaces: () => request<Space[]>('/spaces'),
@@ -62,6 +87,16 @@ export const api = {
     body: JSON.stringify(space),
   }),
   deleteSpace: (id: string) => request<{ success: boolean }>(`/spaces/${id}`, {
+    method: 'DELETE',
+  }),
+  addSpaceMember: (spaceId: string, userId: string) => request<Space>(`/spaces/${spaceId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ userId }),
+  }),
+  leaveSpace: (spaceId: string) => request<Space>(`/spaces/${spaceId}/members/me`, {
+    method: 'DELETE',
+  }),
+  removeSpaceMember: (spaceId: string, userId: string) => request<Space>(`/spaces/${spaceId}/members/${userId}`, {
     method: 'DELETE',
   }),
 
@@ -95,6 +130,26 @@ export const api = {
   deleteTask: (id: string) => request<{ success: boolean }>(`/tasks/${id}`, {
     method: 'DELETE',
   }),
+  convertToAdminTask: (id: string) => request<Task>(`/tasks/${id}/convert-to-admin-task`, {
+    method: 'PATCH',
+  }),
+  requestDeleteTask: (id: string, reason: string) => request<Task>(`/tasks/${id}/request-delete`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  }),
+  decideDeleteTask: (id: string, action: 'approve' | 'reject') => request<Task>(`/tasks/${id}/decide-delete`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  }),
+
+  // Files Hub
+  getFiles: () => request<any[]>('/files'),
+  toggleFilePin: (fileId: string) => request<{ success: boolean }>(`/files/${fileId}/pin`, { method: 'POST' }),
+  toggleFileFavorite: (fileId: string) => request<{ success: boolean }>(`/files/${fileId}/favorite`, { method: 'POST' }),
+  updateFileAlias: (fileId: string, alias: string) => request<{ success: boolean }>(`/files/${fileId}/alias`, {
+    method: 'PUT',
+    body: JSON.stringify({ alias }),
+  }),
 
   // Task Comments
   getComments: (taskId: string) => request<Comment[]>(`/tasks/${taskId}/comments`),
@@ -115,8 +170,11 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(channel),
   }),
+  markChannelAsRead: (channelId: string) => request<Channel>(`/channels/${channelId}/read`, {
+    method: 'POST',
+  }),
   getMessages: (channelId: string) => request<Message[]>(`/channels/${channelId}/messages`),
-  sendMessage: (channelId: string, content: string, options: { parentId?: string | null; taskId?: string | null } = {}) => 
+  sendMessage: (channelId: string, content: string, options: { parentId?: string | null; taskId?: string | null; attachments?: any[] } = {}) =>
     request<Message>(`/channels/${channelId}/messages`, {
       method: 'POST',
       body: JSON.stringify({ content, ...options }),
@@ -128,7 +186,7 @@ export const api = {
   saveMessage: (messageId: string) => request<Message>(`/messages/${messageId}/save`, {
     method: 'POST',
   }),
-  inviteToChat: (email: string, name: string, channelId?: string) => 
+  inviteToChat: (email: string, name: string, channelId?: string) =>
     request<{ success: boolean; message: string; invitee: User }>('/chats/invite', {
       method: 'POST',
       body: JSON.stringify({ email, name, channelId }),
@@ -157,7 +215,7 @@ export const api = {
     body: JSON.stringify(form),
   }),
   getPublicForm: (slug: string) => request<Form>(`/forms/public/${slug}`),
-  submitPublicForm: (slug: string, submission: Record<string, any>) => 
+  submitPublicForm: (slug: string, submission: Record<string, any>) =>
     request<{ success: boolean; task: Task }>(`/forms/public/${slug}/submit`, {
       method: 'POST',
       body: JSON.stringify(submission),
@@ -183,7 +241,7 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ title, bg }),
   }),
-  updateSketch: (id: string, updates: { title?: string; strokes?: any[]; bg?: string }) => 
+  updateSketch: (id: string, updates: { title?: string; strokes?: any[]; bg?: string }) =>
     request<Sketch>(`/sketches/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(updates),
@@ -206,19 +264,19 @@ export const api = {
   }),
 
   // Group settings editor
-  updateChannelSettings: (channelId: string, updates: { 
-    name?: string; 
-    description?: string; 
-    logoUrl?: string; 
-    adminIds?: string[]; 
-    memberIds?: string[]; 
+  updateChannelSettings: (channelId: string, updates: {
+    name?: string;
+    description?: string;
+    logoUrl?: string;
+    adminIds?: string[];
+    memberIds?: string[];
   }) => request<Channel>(`/channels/${channelId}`, {
     method: 'PUT',
     body: JSON.stringify(updates),
   }),
 
   // Base64 document / docx / pdf attachment uploader
-  uploadFileAttachment: (fileName: string, fileType: string, fileData: string) => 
+  uploadFileAttachment: (fileName: string, fileType: string, fileData: string) =>
     request<{ name: string; url: string; type: string; size: number }>('/upload', {
       method: 'POST',
       body: JSON.stringify({ fileName, fileType, fileData }),
@@ -226,20 +284,37 @@ export const api = {
 
   // Pomodoro settings and metrics tracking
   getPomodoroSettings: () => request<any>('/pomodoro/settings'),
-  updatePomodoroSettings: (settings: { 
-    workDuration: number; 
-    shortBreak: number; 
-    longBreak: number; 
-    autoStartTime: boolean; 
+  updatePomodoroSettings: (settings: {
+    workDuration: number;
+    shortBreak: number;
+    longBreak: number;
+    autoStartTime: boolean;
   }) => request<any>('/pomodoro/settings', {
     method: 'POST',
     body: JSON.stringify(settings),
   }),
   getPomodoroSessions: () => request<any[]>('/pomodoro/sessions'),
-  createPomodoroSession: (session: { taskId?: string; durationMinutes: number; type: string }) => 
+  createPomodoroSession: (session: { taskId?: string; durationMinutes: number; type: string }) =>
     request<any>('/pomodoro/sessions', {
       method: 'POST',
       body: JSON.stringify(session),
     }),
+
+  // Workspace Settings & Invitations & Activity Logs
+  getWorkspaceSettings: () => request<any>('/workspaces/settings'),
+  updateWorkspaceSettings: (settings: { name?: string; description?: string; logoUrl?: string }) => request<any>('/workspaces/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings)
+  }),
+  getInvitations: () => request<any[]>('/workspaces/invitations'),
+  createInvitation: (invitation: { email: string; role: string }) => request<any>('/workspaces/invitations', {
+    method: 'POST',
+    body: JSON.stringify(invitation)
+  }),
+  acceptInvitation: (id: string, acceptData: { name: string; password: string }) => request<{ success: boolean; user: User; token: string; workspaces?: any[] }>(`/workspaces/invitations/${id}/accept`, {
+    method: 'POST',
+    body: JSON.stringify(acceptData)
+  }),
+  getActivityLogs: () => request<any[]>('/workspaces/activity-logs'),
 };
 export default api;

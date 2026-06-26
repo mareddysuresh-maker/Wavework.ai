@@ -81,7 +81,7 @@ export const UnifiedInboxView: React.FC = () => {
             </h3>
 
             <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto pr-2">
-              {inbox.map((item) => (
+              {[...inbox].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((item) => (
                 <div 
                   key={item.id} 
                   className={`py-4 flex gap-4 items-start transition first:pt-0 last:pb-0 ${item.isRead ? 'opacity-65' : ''}`}

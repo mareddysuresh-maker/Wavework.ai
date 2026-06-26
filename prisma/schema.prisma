@@ -14,8 +14,11 @@ model User {
   avatarUrl String
   color     String
   timezone  String   @default("UTC")
-  role      String   @default("MEMBER")
+  role      String   @default("EMPLOYEE")
   password  String   @default("password123")
+  fileMetadata String @default("[]")
+  workspaceId String   @default("w-1")
+  activeWorkspaceId String @default("w-1")
   createdAt DateTime @default(now())
 }
 
@@ -26,6 +29,9 @@ model Space {
   color       String
   icon        String
   isPrivate   Boolean @default(false)
+  memberIds   String  @default("[]")
+  deletedAt   DateTime?
+  deletedById String  @default("")
 }
 
 model Folder {
@@ -33,6 +39,8 @@ model Folder {
   spaceId String
   name    String
   color   String @default("#6366f1")
+
+  @@index([spaceId])
 }
 
 model List {
@@ -42,6 +50,11 @@ model List {
   name         String
   createdAt    String
   customFields String @default("[]")
+  deletedAt    DateTime?
+  deletedById  String @default("")
+
+  @@index([spaceId])
+  @@index([folderId])
 }
 
 model Task {
@@ -61,23 +74,38 @@ model Task {
   timeTracked  Int      @default(0)
   customFields String   @default("{}")
   checklist    String   @default("[]")
-  createdById  String   @default("")
-  createdAt    String
-  updatedAt    String
+  createdById         String   @default("")
+  progress            Int      @default(25)
+  isPersonal          Boolean  @default(false)
+  taskSource          String   @default("admin_assigned")
+  assignedById        String   @default("")
+  deleteRequestStatus String   @default("")
+  deleteRequestReason String   @default("")
+  createdAt           String
+  updatedAt           String
+  deletedAt           DateTime?
+  deletedById         String   @default("")
+
+  @@index([listId])
+  @@index([assigneeId])
 }
 
 model Channel {
-  id          String   @id
-  workspaceId String   @default("w-1")
-  name        String
-  description String   @default("")
-  isPrivate   Boolean  @default(false)
-  isDM        Boolean  @default(false)
-  isGroup     Boolean  @default(false)
-  memberIds   String   @default("[]")
-  logoUrl     String   @default("")
-  adminIds    String   @default("[]")
-  createdAt   String
+  id            String   @id
+  workspaceId   String   @default("w-1")
+  name          String
+  description   String   @default("")
+  isPrivate     Boolean  @default(false)
+  isDM          Boolean  @default(false)
+  isGroup       Boolean  @default(false)
+  memberIds     String   @default("[]")
+  logoUrl       String   @default("")
+  adminIds      String   @default("[]")
+  lastMessageAt String   @default("")
+  unreadCount   String   @default("{}")
+  createdAt     String
+  deletedAt     DateTime?
+  deletedById   String   @default("")
 }
 
 model Message {
@@ -91,6 +119,9 @@ model Message {
   reactions    String @default("[]")
   attachments  String @default("[]")
   createdAt    String
+
+  @@index([channelId])
+  @@index([taskId])
 }
 
 model Notification {
@@ -104,6 +135,10 @@ model Notification {
   isRead     Boolean  @default(false)
   isSaved    Boolean  @default(false)
   createdAt  String
+  workspaceId String  @default("w-1")
+  readAt     DateTime?
+
+  @@index([userId])
 }
 
 model ChatRequest {
@@ -114,6 +149,7 @@ model ChatRequest {
   status        String @default("PENDING")
   previewUrl    String @default("")
   createdAt     String
+  workspaceId   String @default("w-1")
 }
 
 model Form {
@@ -125,6 +161,8 @@ model Form {
   fields      String  @default("[]")
   isPublic    Boolean @default(true)
   createdAt   String
+
+  @@index([listId])
 }
 
 model Note {
@@ -134,6 +172,8 @@ model Note {
   content   String @default("")
   createdAt String
   updatedAt String
+
+  @@index([userId])
 }
 
 model Sketch {
@@ -143,6 +183,8 @@ model Sketch {
   bg        String @default("#ffffff")
   strokes   String @default("[]")
   createdAt String
+
+  @@index([userId])
 }
 
 model PomodoroSettings {
@@ -161,4 +203,51 @@ model PomodoroSession {
   durationMinutes Int
   type            String
   completedAt     String
+
+  @@index([userId])
+  @@index([taskId])
 }
+
+model Workspace {
+  id          String   @id
+  name        String
+  description String   @default("")
+  logoUrl     String   @default("")
+  ownerId     String
+  createdAt   DateTime @default(now())
+  deletedAt   DateTime?
+  deletedById String   @default("")
+}
+
+model Invitation {
+  id          String   @id
+  email       String
+  role        String
+  workspaceId String   @default("w-1")
+  createdBy   String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  status      String   @default("PENDING")
+}
+
+model ActivityLog {
+  id          String   @id
+  actorId     String
+  workspaceId String   @default("w-1")
+  eventType   String
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+}
+
+model WorkspaceMembership {
+  id          String   @id
+  userId      String
+  workspaceId String
+  role        String   @default("EMPLOYEE")
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, workspaceId])
+  @@index([userId])
+  @@index([workspaceId])
+}
+
