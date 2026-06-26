@@ -48,17 +48,27 @@ export const requireAuth = async (req, res, next) => {
     const token = authHeader.split('Bearer ')[1];
     
     try {
-      // Lazy-import to prevent errors if firebase-admin is not initialized or configured
-      const { default: adminAuth } = await import('firebase-admin/auth');
-      const decodedToken = await adminAuth.getAuth().verifyIdToken(token);
+      // First try local JWT verification
+      const jwt = await import('jsonwebtoken');
+      const decoded = jwt.default.verify(token, (process.env.JWT_SECRET || 'flowup_default_secret_key_2026'));
       
-      // Map to context
-      req.userId = decodedToken.uid;
+      req.userId = decoded.id;
       const user = await dbService.getItemById('users', req.userId);
-      req.user = user || { id: req.userId, name: 'Firebase User', role: 'EMPLOYEE', workspaceId: 'w-1' };
+      req.user = user || { id: decoded.id, email: decoded.email, role: decoded.role, workspaceId: decoded.workspaceId };
       return proceed();
-    } catch (error) {
-      console.warn("⚠️ Expired or invalid Firebase ID token supplied. Trying fallback identity.", error.message);
+    } catch (jwtErr) {
+      try {
+        // Fallback to Firebase for backward compatibility
+        const { default: adminAuth } = await import('firebase-admin/auth');
+        const decodedToken = await adminAuth.getAuth().verifyIdToken(token);
+        
+        req.userId = decodedToken.uid;
+        const user = await dbService.getItemById('users', req.userId);
+        req.user = user || { id: req.userId, name: 'Firebase User', role: 'EMPLOYEE', workspaceId: 'w-1' };
+        return proceed();
+      } catch (error) {
+        console.warn("⚠️ Expired or invalid token supplied.", jwtErr.message, error.message);
+      }
     }
   }
 
