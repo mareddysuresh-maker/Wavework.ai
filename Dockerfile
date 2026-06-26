@@ -22,4 +22,4 @@ RUN mkdir -p /app/uploads
 RUN npx prisma generate
 
 EXPOSE 5000
-CMD ["node", "backend/server.js"]
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node backend/server.js"]
